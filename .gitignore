@@ -135,3 +135,4 @@ model/
 models/
 data/
 .DS_Store
+.vscode/
