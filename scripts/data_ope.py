@@ -243,7 +243,6 @@ if __name__ == '__main__':
     traj_df.loc[(traj_df['GCS'] > 9) & (traj_df['GCS'] <= 12), 'GCS_disc'] = 3
     traj_df.loc[traj_df['GCS'] > 12, 'GCS_disc'] = 4
     mnar_instrument_var = 'GCS_disc'  # 'SOFA'
-    # selected_features.index(mnar_instrument_var)
     mnar_instrument_var_index = None
     mnar_nextobs_var = ['GCS']  # ['GCS', 'mechvent']
 
@@ -253,36 +252,6 @@ if __name__ == '__main__':
     traj_df['GCS_normal'] = 1. * (traj_df['GCS'] >= 14)
     mnar_nextobs_var = ['GCS_normal']
     mnar_noninstrument_var = ['FiO2_1_normal','HR_normal','RR_normal']
-
-    if len(selected_features) == 2:   
-        traj_df['SOFA_disc'] = 0
-        traj_df.loc[traj_df['SOFA'] <= 7, 'SOFA_disc'] = 1
-        traj_df.loc[(traj_df['SOFA'] > 7) & (traj_df['SOFA'] <= 14), 'SOFA_disc'] = 2
-        traj_df.loc[(traj_df['SOFA'] > 21), 'SOFA_disc'] = 3
-        mnar_instrument_var_index = 1 # None
-        mnar_instrument_var = None
-        mnar_nextobs_var = ['SOFA']
-
-        mnar_noninstrument_var = ['Arterial_lactate']
-        for c in mnar_nextobs_var + mnar_noninstrument_var:
-            scaler = MinMaxScaler()
-            scaler.fit(full_traj_df[c])
-            traj_df[c+'_scaled'] = scaler.transform(traj_df[c])
-        mnar_nextobs_var = [c+'_scaled' for c in mnar_nextobs_var]
-        mnar_noninstrument_var = [c+'_scaled' for c in mnar_noninstrument_var]
-
-        ## custom dropout model
-        if use_complete_trajs and apply_custom_dropout:
-            def custom_dropout_model(rows):
-                Arterial_lactate = rows['Arterial_lactate_scaled'].values
-                SOFA = rows['SOFA_scaled'].values
-                c1 = 0.8
-                c2 = 1.5
-                dropout_prob = 1 / (1 + np.exp(1.5 + c1 * Arterial_lactate[:-1] + c2 * SOFA[1:]))
-                rows['custom_dropout_prob'] = np.append(dropout_prob, None)
-                return rows
-
-            traj_df = traj_df.groupby('icustayid').apply(custom_dropout_model)  
 
     # model related configuration
     default_scaler = "MinMax"
