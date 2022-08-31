@@ -15,8 +15,15 @@ import time
 import gc
 from collections import defaultdict, Counter
 
-from ope_mnar.utils import SimEnv, VectorSimEnv
-from ope_mnar.main import train_Q_func, main_get_target_value_multi
+try:
+    from ope_mnar.utils import SimEnv, VectorSimEnv
+    from ope_mnar.main import train_Q_func, main_get_target_value_multi
+except:
+    import sys
+    sys.path.append(os.path.expanduser('~/Projects/ope_mnar/ope_mnar'))
+    sys.path.append(os.path.expanduser('~/Projects/ope_mnar'))
+    from ope_mnar.utils import SimEnv, VectorSimEnv
+    from ope_mnar.main import train_Q_func, main_get_target_value_multi
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--env', type=str, default='linear') # 'linear', 'SAVE'
@@ -25,7 +32,7 @@ parser.add_argument('--discount', type=float, default=0.8)
 parser.add_argument('--num_trajs', type=int, default=500) # 250, 500
 parser.add_argument('--burn_in', type=int, default=0)
 parser.add_argument('--max_itr', type=int, default=100)
-parser.add_argument('--mc_size', type=int, default=250)  # use 1 for test purpose
+parser.add_argument('--mc_size', type=int, default=1)  # use 1 for test purpose
 parser.add_argument('--eval_policy_mc_size', type=int, default=10000)  # use 100 for test purpose
 parser.add_argument('--eval_horizon', type=int, default=250)
 parser.add_argument('--dropout_scheme', type=str, default='3.19')
@@ -52,7 +59,7 @@ args = parser.parse_args()
 
 
 if __name__ == '__main__':
-    log_dir = os.path.expanduser('~/ope_mnar/output')
+    log_dir = os.path.expanduser('~/Projects/ope_mnar/output')
     env_class = args.env
     default_scaler = "MinMax" # "NormCdf", "MinMax"
     T = args.max_episode_length
@@ -650,8 +657,8 @@ if __name__ == '__main__':
     pathlib.Path(train_dir).mkdir(parents=True, exist_ok=True)
     pathlib.Path(value_dir).mkdir(parents=True, exist_ok=True)
 
-    avg_missing_rate = defaultdict(list)
-    avg_missing_rate[1].append(0)
+    # avg_missing_rate = defaultdict(list)
+    # avg_missing_rate[1].append(0)
     for itr in range(mc_size):
         np.random.seed(itr)
         # if the observational space of the environemnt is bounded, the initial states will only be sampled from uniform distribution
@@ -724,19 +731,7 @@ if __name__ == '__main__':
             filename_log=filename_log,
             filename_train=filename_train,
             **env_dropout_kwargs)
-
-        # check missing rate
-        obs_data = pd.read_csv(
-            os.path.join(
-                log_dir,
-                f'{env_class}_est_Q_func{folder_suffix}/T_{T}_n_{n}_L_{dof}_gamma{gamma}_dropout{dropout_scheme}',
-                filename_data))
-        total = obs_data['id'].nunique() 
-        obs_data = obs_data.loc[~obs_data['action'].isna()] # remove the terminal state
-        count = Counter(obs_data.groupby('id').size())
-        for t in range(2, T + 1 - burn_in):
-            avg_missing_rate[t].append(
-                sum([count[x] for x in range(1, t)]) / total)
+        
         end = time.time()
         print('Finished! Elapsed time: %.3f mins' % ((end - start) / 60))
         
@@ -781,6 +776,3 @@ if __name__ == '__main__':
         end = time.time()
         print('Finished! Elapsed time: %.3f mins' % ((end - start) / 60))
         _ = gc.collect()
-
-    avg_missing_rate = {k: np.mean(x) for k, x in avg_missing_rate.items()}
-    print("average missing rate:", avg_missing_rate)

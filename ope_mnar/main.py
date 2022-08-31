@@ -1,7 +1,7 @@
 import os
 import numpy as np
 import pickle
-from collections import defaultdict
+from collections import defaultdict, Counter
 import copy
 import pathlib
 import gc
@@ -234,7 +234,18 @@ def train_Q_func(
     print("end updating...")
 
     buffer_data = agent.export_buffer(eval_Q=True)
-    buffer_data.to_csv(os.path.join(export_dir, filename_data), index=False)
+    # buffer_data.to_csv(os.path.join(export_dir, filename_data), index=False)
+    
+    # check missing rate
+    stepwise_missing_rate = dict()
+    stepwise_missing_rate[1] = 0
+    total = buffer_data['id'].nunique()
+    buffer_data = buffer_data.loc[~buffer_data['action'].isna()] # remove the terminal state
+    count = Counter(buffer_data.groupby('id').size())
+    for t in range(2, T + 1 - burn_in):
+        stepwise_missing_rate[t] = sum([count[x] for x in range(1, t)]) / total
+    print("stepwise missing rate:", stepwise_missing_rate)
+
     env.close()
     # pickle the trained model
     if export_dir:
@@ -352,10 +363,9 @@ def main_get_target_value_multi(T=25,
             if isinstance(eval_S_inits_sample[k], list):
                 eval_S_inits_sample[k] = np.array(eval_S_inits_sample[k])
             if not isinstance(eval_S_inits_dict[k], dict):
-                assert (eval_S_inits_sample[k] == eval_S_inits_dict[k]).all()
+                assert (eval_S_inits_sample[k] == eval_S_inits_dict[k]).all() or \
+                    np.mean((eval_S_inits_sample[k] - eval_S_inits_dict[k]) ** 2) < 1e-12 # tolerate small numerical difference
             if eval_S_inits_sample_kwargs[k] is not None and isinstance(eval_S_inits_dict[k], dict):
-                print(f'eval_S_inits_sample_kwargs[k]:{eval_S_inits_sample_kwargs[k]}')
-                print(f'eval_S_inits_dict[k]:{eval_S_inits_dict[k]}')
                 for k1 in eval_S_inits_sample_kwargs[k]:
                     assert (eval_S_inits_sample_kwargs[k][k1] == eval_S_inits_dict[k][k1]).all()
                 for k2 in eval_S_inits_dict[k]:
