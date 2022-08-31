@@ -32,7 +32,7 @@ parser.add_argument('--discount', type=float, default=0.8)
 parser.add_argument('--num_trajs', type=int, default=500) # 250, 500
 parser.add_argument('--burn_in', type=int, default=0)
 parser.add_argument('--max_itr', type=int, default=100)
-parser.add_argument('--mc_size', type=int, default=1)  # use 1 for test purpose
+parser.add_argument('--mc_size', type=int, default=250)  # use 1 for test purpose
 parser.add_argument('--eval_policy_mc_size', type=int, default=10000)  # use 100 for test purpose
 parser.add_argument('--eval_horizon', type=int, default=250)
 parser.add_argument('--dropout_scheme', type=str, default='3.19')
@@ -657,8 +657,6 @@ if __name__ == '__main__':
     pathlib.Path(train_dir).mkdir(parents=True, exist_ok=True)
     pathlib.Path(value_dir).mkdir(parents=True, exist_ok=True)
 
-    # avg_missing_rate = defaultdict(list)
-    # avg_missing_rate[1].append(0)
     for itr in range(mc_size):
         np.random.seed(itr)
         # if the observational space of the environemnt is bounded, the initial states will only be sampled from uniform distribution
