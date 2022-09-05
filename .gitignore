@@ -131,6 +131,7 @@ dmypy.json
 # other
 output/
 figures/
+analysis/
 model/
 models/
 data/
