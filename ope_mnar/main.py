@@ -51,7 +51,8 @@ def train_Q_func(
         grid_search=False,
         basis_scale_factor=1.,
         dropout_model_type='linear',
-        scale_obs=False,
+        dropout_include_reward=True,
+        dropout_scale_obs=False,
         model_suffix='',
         prob_lbound=1e-3,
         eval_env=None,
@@ -96,7 +97,7 @@ def train_Q_func(
         grid_search (bool): if True, use grid search to select the optimal ridge_factor
         basis_scale_factor (float): a multiplier to basis in order to avoid extremely small value
         dropout_model_type (str): model used for dropout model, select from "linear", "mlp" and "rf" (only applies to MAR case)
-        scale_obs (bool): if True, scale observation before fitting the model
+        dropout_scale_obs (bool): if True, scale observation before fitting the model
         model_suffix (str): suffix to the filename of saved model
         prob_lbound (float): lower bound of dropout/survival probability to avoid extreme inverse weight
         eval_env (gym.Env): dynamic environment to evaluate the policy, if not specified, use env
@@ -170,13 +171,13 @@ def train_Q_func(
             model_type=dropout_model_type,
             missing_mechanism=missing_mechanism,
             train_ratio=0.8,
-            scale_obs=scale_obs,
+            scale_obs=dropout_scale_obs,
             dropout_obs_count_thres=dropout_obs_count_thres,
             export_dir=os.path.join(export_dir, 'models'),
             pkl_filename=
             f"dropout_model_{dropout_model_type}_T{T}_n{n}_gamma{discount}_{model_suffix}.pkl",
             seed=seed,
-            include_reward=True,
+            include_reward=dropout_include_reward,
             instrument_var_index=instrument_var_index,
             mnar_y_transform=mnar_y_transform,
             gamma_init=gamma_init, 
@@ -275,6 +276,8 @@ def train_Q_func(
                 agent.inv_Sigma_hat,
                 'max_inverse_wt':
                 agent.max_inverse_wt,
+                'stepwise_missing_rate': 
+                stepwise_missing_rate,
             }, outfile_train)
     del agent
     _ = gc.collect()
@@ -484,6 +487,7 @@ def eval_V_int_CI_multi(
         dropout_model_type='linear',
         dropout_obs_count_thres=1,
         dropout_scale_obs=False,
+        dropout_include_reward=True,
         missing_mechanism='mar',
         instrument_var_index=None,
         mnar_y_transform=None,
@@ -671,7 +675,7 @@ def eval_V_int_CI_multi(
                 pkl_filename=
                 f"dropout_model_{dropout_model_type}_T{T}_n{n}_gamma{discount}_itr_{i}.pkl",
                 seed=seed,
-                include_reward=True,
+                include_reward=dropout_include_reward, # True, False
                 instrument_var_index=instrument_var_index,
                 mnar_y_transform=mnar_y_transform,
                 gamma_init=gamma_init,
@@ -790,6 +794,7 @@ def eval_V_int_CI_bootstrap_multi(
         dropout_model_type='linear',
         dropout_obs_count_thres=1, # 0
         dropout_scale_obs=False,
+        dropout_include_reward=True,
         missing_mechanism='mar',
         instrument_var_index=None,
         mnar_y_transform=None,
@@ -981,7 +986,7 @@ def eval_V_int_CI_bootstrap_multi(
                 pkl_filename=
                 f"dropout_model_{dropout_model_type}_T{T}_n{n}_gamma{discount}_itr_{i}.pkl",
                 seed=seed,
-                include_reward=True,
+                include_reward=dropout_include_reward,
                 instrument_var_index=instrument_var_index,
                 mnar_y_transform=mnar_y_transform,
                 gamma_init=gamma_init,
@@ -1052,7 +1057,7 @@ def eval_V_int_CI_bootstrap_multi(
                     export_dir=os.path.join(export_dir, 'models'),
                     pkl_filename=None,
                     seed=seed,
-                    include_reward=True,
+                    include_reward=dropout_include_reward,
                     instrument_var_index=instrument_var_index,
                     mnar_y_transform=mnar_y_transform,
                     gamma_init=gamma_init,

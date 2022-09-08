@@ -1211,28 +1211,39 @@ class OfflineQLearn(object):
             else:
                 X, y = obs, dropout_next
             data = {}
+            obs_train_list = [] 
+            probT_train_list = []
+            action_train_list = []
             for a in range(self.num_actions):
                 X_a, y_a = X[actions == a], y[actions == a]
                 if dropout_prob is not None:
-                    prob_a = dropout_prob[actions == a]
-                    X_train, X_test, y_train, y_test, prob_train, prob_test = train_test_split(
+                    probT_a = dropout_prob[actions == a]
+                    X_train, X_test, y_train, y_test, obs_train, obs_test, probT_train, probT_test = train_test_split(
                         X_a,
                         y_a,
-                        prob_a,
+                        obs[actions == a],
+                        probT_a,
                         test_size=1 - train_ratio,
                         random_state=seed)
+                    obs_train_list.append(obs_train)
+                    probT_train_list.append(probT_train)
                 else:
-                    X_train, X_test, y_train, y_test = train_test_split(
-                        X_a, y_a, test_size=1 - train_ratio, random_state=seed)
-                    prob_train, prob_test = None, None
+                    X_train, X_test, y_train, y_test, obs_train, obs_test = train_test_split(
+                        X_a, y_a, obs[actions == a], test_size=1 - train_ratio, random_state=seed)
+                    probT_train, probT_test = None, None
                 data[a] = {
                     'X_train': X_train,
                     'X_test': X_test,
                     'y_train': y_train,
                     'y_test': y_test,
-                    'prob_train': prob_train,
-                    'prob_test': prob_test
+                    'prob_train': probT_train,
+                    'prob_test': probT_test
                 }
+                action_train_list.append([a] * len(X_train))
+            obs_train = np.vstack(obs_train_list)
+            action_train = np.concatenate(action_train_list)
+            if probT_train_list:
+                probT_train = np.concatenate(probT_train_list)
             if model_type.lower() == "linear":
                 for a in range(self.num_actions):
                     logit_reg = LogisticRegression(fit_intercept=True,
@@ -1491,90 +1502,101 @@ class OfflineQLearn(object):
             if self.dropout_model_filename is not None:
                 mnar_clf.save(self.dropout_model_filename)
 
-            # add some additional tracking
-            if verbose and probT_train is not None:
+        # add some additional tracking
+        if verbose and probT_train is not None:
+            print('probT_train', probT_train)
+            prob_pred_df = pd.DataFrame({
+                'X1': obs_train[:, 0],
+                'X2': obs_train[:, 1],
+                'dropout_prob': probT_train
+            })
+            if missing_mechanism == 'mnar':
                 prob_pred_train = 1 - \
                     mnar_clf.predict_proba(u=u_train, z=z_train, y=y_train)
-                prob_pred_df = pd.DataFrame({
-                    'X1': obs_train[:, 0],
-                    'X2': obs_train[:, 1],
-                    'dropout_prob': probT_train
-                })
-                prob_pred_train = 1 - \
-                    mnar_clf.predict_proba(u=u_train, z=z_train, y=y_train)
-                prob_pred_df['dropout_prob_est'] = prob_pred_train
+            else:
+                prob_pred_train = np.zeros_like(probT_train)
+                for a in range(self.num_actions):
+                    prob_pred_train[action_train == a] = self.fitted_dropout_model[a].predict_proba(X=data[a]['X_train'])[:, 1]
+            prob_pred_df['dropout_prob_est'] = prob_pred_train
+            if missing_mechanism == 'mnar':
                 train_mse = mean_squared_error(
                     y_true=probT_train[delta_train == 1],
                     y_pred=prob_pred_train[delta_train == 1])
-                logitT_train = np.log(1 / np.maximum(probT_train, 1e-8) - 1)
-                logit_pred_train = np.log(1 /
-                                          np.maximum(prob_pred_train, 1e-8) -
-                                          1)
-                print(
-                    'true obs prob (0.0/0.25/0.5/0.75/1.0 quantile): {0:.2f}/{1:.2f}/{2:.2f}/{3:.2f}/{4:.2f}'
-                    .format(np.nanmin(probT_train),
-                            np.nanquantile(probT_train, 0.25),
-                            np.nanquantile(probT_train, 0.5),
-                            np.nanquantile(probT_train, 0.75),
-                            np.nanmax(probT_train)))
-                print(
-                    'true obs logit (0.0/0.25/0.5/0.75/1.0 quantile): {0:.2f}/{1:.2f}/{2:.2f}/{3:.2f}/{4:.2f}'
-                    .format(np.nanmin(logitT_train),
-                            np.nanquantile(logitT_train, 0.25),
-                            np.nanquantile(logitT_train, 0.5),
-                            np.nanquantile(logitT_train, 0.75),
-                            np.nanmax(logitT_train)))
-                print(
-                    'est obs prob (0.0/0.25/0.5/0.75/1.0 quantile): {0:.2f}/{1:.2f}/{2:.2f}/{3:.2f}/{4:.2f}'
-                    .format(np.nanmin(prob_pred_train),
-                            np.nanquantile(prob_pred_train, 0.25),
-                            np.nanquantile(prob_pred_train, 0.5),
-                            np.nanquantile(prob_pred_train, 0.75),
-                            np.nanmax(prob_pred_train)))
-                print(
-                    'est obs logit (0.0/0.25/0.5/0.75/1.0 quantile): {0:.2f}/{1:.2f}/{2:.2f}/{3:.2f}/{4:.2f}'
-                    .format(np.nanmin(logit_pred_train),
-                            np.nanquantile(logit_pred_train, 0.25),
-                            np.nanquantile(logit_pred_train, 0.5),
-                            np.nanquantile(logit_pred_train, 0.75),
-                            np.nanmax(logit_pred_train)))
-                if False:
-                    fig, ax = plt.subplots(nrows=2,
-                                        ncols=2,
-                                        figsize=(5 * 2, 4 * 2))
-                    sns.scatterplot(x='X1',
-                                    y='X2',
-                                    hue='dropout_prob',
-                                    data=prob_pred_df,
-                                    ax=ax[0, 0],
-                                    s=50)
-                    ax[0, 0].set_title(f'true dropout prob')
-                    ax[0, 0].legend(bbox_to_anchor=(1.4, 1), title="prob")
-                    sns.scatterplot(x='X1',
-                                    y='X2',
-                                    hue='dropout_prob_est',
-                                    data=prob_pred_df,
-                                    ax=ax[0, 1],
-                                    s=50)
+            else:
+                train_mse = mean_squared_error(y_true=probT_train, y_pred=prob_pred_train)                
+            logitT_train = np.log(1 / np.maximum(probT_train, 1e-8) - 1)
+            logit_pred_train = np.log(1 /
+                                        np.maximum(prob_pred_train, 1e-8) -
+                                        1)
+            print(
+                'true obs prob (0.0/0.25/0.5/0.75/1.0 quantile): {0:.2f}/{1:.2f}/{2:.2f}/{3:.2f}/{4:.2f}'
+                .format(np.nanmin(probT_train),
+                        np.nanquantile(probT_train, 0.25),
+                        np.nanquantile(probT_train, 0.5),
+                        np.nanquantile(probT_train, 0.75),
+                        np.nanmax(probT_train)))
+            print(
+                'true obs logit (0.0/0.25/0.5/0.75/1.0 quantile): {0:.2f}/{1:.2f}/{2:.2f}/{3:.2f}/{4:.2f}'
+                .format(np.nanmin(logitT_train),
+                        np.nanquantile(logitT_train, 0.25),
+                        np.nanquantile(logitT_train, 0.5),
+                        np.nanquantile(logitT_train, 0.75),
+                        np.nanmax(logitT_train)))
+            print(
+                'est obs prob (0.0/0.25/0.5/0.75/1.0 quantile): {0:.2f}/{1:.2f}/{2:.2f}/{3:.2f}/{4:.2f}'
+                .format(np.nanmin(prob_pred_train),
+                        np.nanquantile(prob_pred_train, 0.25),
+                        np.nanquantile(prob_pred_train, 0.5),
+                        np.nanquantile(prob_pred_train, 0.75),
+                        np.nanmax(prob_pred_train)))
+            print(
+                'est obs logit (0.0/0.25/0.5/0.75/1.0 quantile): {0:.2f}/{1:.2f}/{2:.2f}/{3:.2f}/{4:.2f}'
+                .format(np.nanmin(logit_pred_train),
+                        np.nanquantile(logit_pred_train, 0.25),
+                        np.nanquantile(logit_pred_train, 0.5),
+                        np.nanquantile(logit_pred_train, 0.75),
+                        np.nanmax(logit_pred_train)))
+            if True:
+                fig, ax = plt.subplots(nrows=2,
+                                    ncols=2,
+                                    figsize=(5 * 2, 4 * 2))
+                sns.scatterplot(x='X1',
+                                y='X2',
+                                hue='dropout_prob',
+                                data=prob_pred_df,
+                                ax=ax[0, 0],
+                                s=50)
+                ax[0, 0].set_title(f'true dropout prob')
+                ax[0, 0].legend(bbox_to_anchor=(1.4, 1), title="prob")
+                sns.scatterplot(x='X1',
+                                y='X2',
+                                hue='dropout_prob_est',
+                                data=prob_pred_df,
+                                ax=ax[0, 1],
+                                s=50)
+                if missing_mechanism == 'mnar':
                     ax[0, 1].set_title(
                         f'est dropout prob, L={L}, gamma_hat={round(mnar_clf.gamma_hat[0],2)}, MSE={round(train_mse,3)}'
                     )
-                    ax[0, 1].legend(bbox_to_anchor=(1.4, 1), title="prob")
-                    sns.histplot(data=prob_pred_df,
-                                x='dropout_prob',
-                                bins=25,
-                                ax=ax[1, 0])
-                    sns.histplot(data=prob_pred_df,
-                                x='dropout_prob_est',
-                                bins=25,
-                                ax=ax[1, 1])
-                    plt.tight_layout()
-                    plt.savefig(
-                        os.path.join(
-                            export_dir,
-                            f"prob_est_dist_missing{round(self.dropout_rate,1)}_instrument{L}_gamma{round(mnar_clf.gamma_hat[0],2)}.png"
-                        ))
-                    plt.close()
+                else:
+                    ax[0, 1].set_title(f'est dropout prob, MSE={round(train_mse,3)}')                    
+                ax[0, 1].legend(bbox_to_anchor=(1.4, 1), title="prob")
+                sns.histplot(data=prob_pred_df,
+                            x='dropout_prob',
+                            bins=25,
+                            ax=ax[1, 0])
+                sns.histplot(data=prob_pred_df,
+                            x='dropout_prob_est',
+                            bins=25,
+                            ax=ax[1, 1])
+                plt.tight_layout()
+                if missing_mechanism == 'mnar':
+                    figure_name = f"prob_est_dist_missing{round(self.dropout_rate,1)}_instrument{L}_gamma{round(mnar_clf.gamma_hat[0],2)}.png"
+                else:
+                    figure_name = f"prob_est_dist_missing{round(self.dropout_rate,1)}_mar.png"
+                plt.savefig(os.path.join(export_dir, figure_name))
+                plt.close()
+
 
     def estimate_missing_prob(self,
                       missing_mechanism=None,
@@ -2324,10 +2346,6 @@ class OfflineQLearn(object):
         timewise_inverse_wt = timewise_inverse_wt / self.n
         if dropout_prob_concat:
             dropout_prob_concat = np.concatenate(dropout_prob_concat)
-        if verbose:
-            print(
-                f'Average inverse weight at each time point: {np.around(timewise_inverse_wt,3)}'
-            )
         U_mat = self._U(S=next_obs, policy=policy)
         mat1 = reduce(np.matmul,
                       [Xi_mat.T, inverse_wts_mat, Xi_mat - self.gamma * U_mat])

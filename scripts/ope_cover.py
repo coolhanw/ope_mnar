@@ -11,17 +11,24 @@ import argparse
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-from ope_mnar.utils import VectorSimEnv
-from ope_mnar.main import eval_V_int_CI_multi, eval_V_int_CI_bootstrap_multi
+try:
+    from ope_mnar.utils import VectorSimEnv
+    from ope_mnar.main import eval_V_int_CI_multi, eval_V_int_CI_bootstrap_multi
+except:
+    import sys
+    sys.path.append(os.path.expanduser('~/Projects/ope_mnar/ope_mnar'))
+    sys.path.append(os.path.expanduser('~/Projects/ope_mnar'))
+    from ope_mnar.utils import VectorSimEnv
+    from ope_mnar.main import eval_V_int_CI_multi, eval_V_int_CI_bootstrap_multi
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--env', type=str,
                     default='linear')  # 'linear', 'SAVE'
 parser.add_argument('--max_episode_length', type=int, default=25)
 parser.add_argument('--discount', type=float, default=0.8)
-parser.add_argument('--num_trajs', type=int, default=500)  # 250, 500
+parser.add_argument('--num_trajs', type=int, default=500) # 250, 500
 parser.add_argument('--burn_in', type=int, default=0)
-parser.add_argument('--mc_size', type=int, default=250) # use 2 for test purpose 
+parser.add_argument('--mc_size', type=int, default=250)
 parser.add_argument('--eval_policy_mc_size', type=int,
                     default=10000)  # use 100 for test purpose
 parser.add_argument('--eval_horizon', type=int, default=250)
@@ -37,7 +44,7 @@ parser.add_argument('--ipw',
                     default=True)
 parser.add_argument('--estimate_missing_prob',
                     type=lambda x: (str(x).lower() == 'true'),
-                    default=False)
+                    default=True)
 parser.add_argument('--bootstrap',
                     type=lambda x: (str(x).lower() == 'true'),
                     default=False)
@@ -49,7 +56,7 @@ parser.add_argument('--log_suffix', type=str, default='')
 args = parser.parse_args()
 
 if __name__ == '__main__':
-    log_dir = os.path.expanduser('~/ope_mnar/output')
+    log_dir = os.path.expanduser('~/Projects/ope_mnar/output')
     env_class = args.env
     default_scaler = "MinMax"  # "NormCdf", "MinMax"
 
@@ -64,7 +71,7 @@ if __name__ == '__main__':
     mc_size = args.mc_size
     burn_in = args.burn_in
     # alpha = args.alpha
-    alpha_list = [0.05, 0.1, 0.2, 0.3, 0.4] 
+    alpha_list = [0.05] # [0.05, 0.1, 0.2, 0.3, 0.4] 
     vectorize_env = args.vectorize_env
     dropout_scheme = args.dropout_scheme
     dropout_obs_count_thres = args.dropout_obs_count_thres
@@ -685,6 +692,7 @@ if __name__ == '__main__':
             dropout_model_type='linear',
             dropout_obs_count_thres=dropout_obs_count_thres,
             dropout_scale_obs=False,
+            dropout_include_reward=True,
             missing_mechanism=missing_mechanism,
             instrument_var_index=instrument_var_index,
             mnar_y_transform=mnar_y_transform,
@@ -791,7 +799,8 @@ if __name__ == '__main__':
             target_policy=policy,
             dropout_model_type='linear',
             dropout_obs_count_thres=dropout_obs_count_thres,
-            dropout_scale_obs=True,  # True, False
+            dropout_scale_obs=False,
+            dropout_include_reward=True,
             missing_mechanism=missing_mechanism,
             instrument_var_index=instrument_var_index,
             mnar_y_transform=mnar_y_transform,

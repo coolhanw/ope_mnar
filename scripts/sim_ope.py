@@ -32,8 +32,8 @@ parser.add_argument('--discount', type=float, default=0.8)
 parser.add_argument('--num_trajs', type=int, default=500) # 250, 500
 parser.add_argument('--burn_in', type=int, default=0)
 parser.add_argument('--max_itr', type=int, default=100)
-parser.add_argument('--mc_size', type=int, default=250)  # use 1 for test purpose
-parser.add_argument('--eval_policy_mc_size', type=int, default=10000)  # use 100 for test purpose
+parser.add_argument('--mc_size', type=int, default=250)
+parser.add_argument('--eval_policy_mc_size', type=int, default=10000)
 parser.add_argument('--eval_horizon', type=int, default=250)
 parser.add_argument('--dropout_scheme', type=str, default='3.19')
 parser.add_argument('--dropout_rate', type=float, default=0.9)
@@ -721,7 +721,8 @@ if __name__ == '__main__':
             grid_search=grid_search,
             basis_scale_factor=basis_scale_factor,
             dropout_model_type=dropout_model_type,
-            scale_obs=True,
+            dropout_scale_obs=True,
+            dropout_include_reward=True,
             model_suffix=suffix,
             prob_lbound=prob_lbound,
             eval_env=env,
@@ -772,5 +773,5 @@ if __name__ == '__main__':
                 value_dict[eval_horizon][default_key]['est_value_int']
             })
         end = time.time()
-        print('Finished! Elapsed time: %.3f mins' % ((end - start) / 60))
+        print('Finished! Elapsed time: %.3f mins \n' % ((end - start) / 60))
         _ = gc.collect()
