@@ -46,6 +46,7 @@ def train_Q_func(
         instrument_var_index=None,
         mnar_y_transform=None,
         gamma_init=None,
+        bandwidth_factor=1.5,
         drop_last_TD=True,
         ridge_factor=0.,
         grid_search=False,
@@ -92,6 +93,7 @@ def train_Q_func(
         instrument_var_index (int): index of the instrument variable
         mnar_y_transform (callable): input next_obs and reward, output Y term for the mnar dropout model
         gamma_init (float): initial value for gamma in MNAR estimation
+        bandwidth_factor (float): the constant used in bandwidth calculation
         drop_last_TD (bool): if True, drop the temporal difference error at the terminal step
         ridge_factor (float): ridge penalty parameter
         grid_search (bool): if True, use grid search to select the optimal ridge_factor
@@ -181,6 +183,7 @@ def train_Q_func(
             instrument_var_index=instrument_var_index,
             mnar_y_transform=mnar_y_transform,
             gamma_init=gamma_init, 
+            bandwidth_factor=bandwidth_factor,
             verbose=True)
         agent.estimate_missing_prob(missing_mechanism=missing_mechanism)
         fit_dropout_end = time.time()
@@ -492,6 +495,7 @@ def eval_V_int_CI_multi(
         instrument_var_index=None,
         mnar_y_transform=None,
         gamma_init=None,
+        bandwidth_factor=1.5,
         value_import_dir=None,
         export_dir=None,
         filename_true_value=None,
@@ -679,6 +683,7 @@ def eval_V_int_CI_multi(
                 instrument_var_index=instrument_var_index,
                 mnar_y_transform=mnar_y_transform,
                 gamma_init=gamma_init,
+                bandwidth_factor=bandwidth_factor,
                 verbose=True)
             agent.estimate_missing_prob(missing_mechanism=missing_mechanism)
             fit_dropout_end = time.time()
@@ -799,6 +804,7 @@ def eval_V_int_CI_bootstrap_multi(
         instrument_var_index=None,
         mnar_y_transform=None,
         gamma_init=None,
+        bandwidth_factor=1.5,
         value_import_dir=None,
         export_dir=None,
         filename_true_value=None,
@@ -990,6 +996,7 @@ def eval_V_int_CI_bootstrap_multi(
                 instrument_var_index=instrument_var_index,
                 mnar_y_transform=mnar_y_transform,
                 gamma_init=gamma_init,
+                bandwidth_factor=bandwidth_factor,
                 verbose=True)
             agent.estimate_missing_prob(missing_mechanism=missing_mechanism)
             fit_dropout_end = time.time()
@@ -1061,6 +1068,7 @@ def eval_V_int_CI_bootstrap_multi(
                     instrument_var_index=instrument_var_index,
                     mnar_y_transform=mnar_y_transform,
                     gamma_init=gamma_init,
+                    bandwidth_factor=bandwidth_factor,
                     verbose=False)
                 agent.estimate_missing_prob(missing_mechanism=missing_mechanism,subsample_index=selected_key)
             agent._beta_hat(policy=target_policy,

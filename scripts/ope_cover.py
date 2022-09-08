@@ -80,12 +80,14 @@ if __name__ == '__main__':
     weight_curr_step = True
     instrument_var_index = None
     mnar_y_transform = None
+    bandwidth_factor = None
     if env_class.lower() in ['linear', 'save']:
         if dropout_scheme == '0':
             missing_mechanism = None
         elif dropout_scheme in ['3.19', '3.20']:
             missing_mechanism = 'mnar'
             instrument_var_index = 1
+            bandwidth_factor = 7.5
         else:
             missing_mechanism = 'mar'
 
@@ -698,6 +700,7 @@ if __name__ == '__main__':
             mnar_y_transform=mnar_y_transform,
             gamma_init=None if missing_mechanism == 'mnar'
             and not initialize_with_gammaT else gamma_true,
+            bandwidth_factor=bandwidth_factor,
             value_import_dir=os.path.join(
                 log_dir, f'{env_class}_value_coverage{folder_suffix}'),
             export_dir=export_dir,
@@ -806,6 +809,7 @@ if __name__ == '__main__':
             mnar_y_transform=mnar_y_transform,
             gamma_init=None if missing_mechanism == 'mnar'
             and not initialize_with_gammaT else gamma_true,
+            bandwidth_factor=bandwidth_factor,
             value_import_dir=os.path.join(
                 log_dir, f'{env_class}_value_coverage{folder_suffix}'),
             export_dir=export_dir,

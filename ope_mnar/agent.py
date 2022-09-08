@@ -1067,6 +1067,7 @@ class OfflineQLearn(object):
                             instrument_var_index=None,
                             mnar_y_transform=None,
                             gamma_init=None,
+                            bandwidth_factor=1.5,
                             verbose=True,
                             **kwargs):
         """
@@ -1086,6 +1087,7 @@ class OfflineQLearn(object):
             instrument_var_index (int): index of the instrument variable
             mnar_y_transform (callable): input next_obs and reward, output Y term for the mnar dropout model 
             gamma_init (float): initial value for gamma in MNAR estimation
+            bandwidth_factor (float): the constant used in bandwidth calculation
             kwargs (dict): passed to model
         """
         self.missing_mechanism = missing_mechanism
@@ -1460,7 +1462,8 @@ class OfflineQLearn(object):
                          seed=seed,
                          gamma_init=gamma_init,
                          bounds=bounds,
-                         verbose=verbose)
+                         verbose=verbose,
+                         bandwidth_factor=bandwidth_factor)
             self.mnar_gamma = mnar_clf.gamma_hat
             if verbose:
                 print(

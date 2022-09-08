@@ -87,12 +87,14 @@ if __name__ == '__main__':
     dropout_obs_count_thres = args.dropout_obs_count_thres
     instrument_var_index = None
     mnar_y_transform = None
+    bandwidth_factor = None
     if env_class.lower() in ['linear','save']:
         if dropout_scheme == '0':
             missing_mechanism = None
         elif dropout_scheme in ['3.19','3.20']:
             missing_mechanism = 'mnar'
             instrument_var_index = 1
+            bandwidth_factor = 7.5
         else :
             missing_mechanism = 'mar' 
 
@@ -716,6 +718,7 @@ if __name__ == '__main__':
             instrument_var_index=instrument_var_index,
             mnar_y_transform=mnar_y_transform,
             gamma_init=None if missing_mechanism=='mnar' and not initialize_with_gammaT else gamma_true,
+            bandwidth_factor=bandwidth_factor,
             drop_last_TD=drop_last_TD,
             ridge_factor=ridge_factor,
             grid_search=grid_search,

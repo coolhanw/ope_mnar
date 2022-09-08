@@ -458,7 +458,8 @@ class ExpoTiltingClassifierMNAR():
             seed=None,
             gamma_init=None,
             bounds=None,
-            verbose=True):
+            verbose=True,
+            bandwidth_factor=1.5):
         """A wrapper function of estimate_gamma()
         
         Args:
@@ -471,6 +472,7 @@ class ExpoTiltingClassifierMNAR():
             seed (int): random seed to general initial values
             gamma_init (int or np.ndarray): initial value of gamma, only used in simulation
             bounds (tuple): bounds for value search
+            bandwidth_factor (float): the constant used in bandwidth calculation
             verbose (bool): If True, print intermediate results
             
         Returns:
@@ -491,7 +493,7 @@ class ExpoTiltingClassifierMNAR():
         if bandwidth is None:  # default
             self.bandwidth_dict = {}
             bandwidth = np.zeros(shape=(len(z), u_dim, u_dim))
-            bandwidth_factor = 7.5  # needs to be tuned for each scenario!
+            # bandwidth_factor = 7.5  # bandwidth needs to be tuned for each scenario!
             for i in range(1, L + 1):
                 if u_dim == 1:
                     bandwidth[z == i] = np.square(bandwidth_factor *

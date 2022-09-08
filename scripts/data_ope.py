@@ -672,6 +672,7 @@ if __name__ == '__main__':
                 include_reward=include_reward,
                 instrument_var_index=mnar_instrument_var_index,
                 gamma_init=None,  # None
+                bandwidth_factor=7.5,
                 verbose=True)
             mimic_ope.estimate_missing_prob(missing_mechanism=missing_mechanism)
             fit_dropout_end = time.time()
