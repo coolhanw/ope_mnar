@@ -1374,7 +1374,7 @@ class OfflineQLearn(object):
                     u_dim = mnar_noninstrument_arr.shape[1]
                 u_arr = mnar_noninstrument_arr.reshape(-1, u_dim)
             if mnar_instrument_arr is None:
-                assert instrument_var_index, 'please provide the name of the instrument variable, otherwise there is identifibility issue.'
+                assert instrument_var_index is not None, 'please provide the name of the instrument variable, otherwise there is identifibility issue.'
                 z_arr = obs[:, instrument_var_index]  # (n,)
                 # discretize Z
                 L = y_dim + 3  # try y_dim + 1, y_dim + 2, or y_dim + 3
