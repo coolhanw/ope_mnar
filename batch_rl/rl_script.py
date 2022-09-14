@@ -13,18 +13,27 @@ import argparse
 import pickle
 import pathlib
 
-from batch_rl.dqn import DQN,DuelingDQN
-from batch_rl.bcq import discrete_BCQ
-from batch_rl.rem import REM
-from batch_rl.utils import ReplayBuffer, ReplayBufferPER
+try:
+    from batch_rl.dqn import DQN, DuelingDQN
+    from batch_rl.bcq import discrete_BCQ
+    from batch_rl.rem import REM
+    from batch_rl.utils import ReplayBuffer, ReplayBufferPER
+except:
+    import sys
+    sys.path.append(os.path.expanduser('~/Projects/ope_mnar/batch_rl'))
+    sys.path.append(os.path.expanduser('~/Projects/ope_mnar'))
+    from batch_rl.dqn import DQN, DuelingDQN
+    from batch_rl.bcq import discrete_BCQ
+    from batch_rl.rem import REM
+    from batch_rl.utils import ReplayBuffer, ReplayBufferPER
 
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--discount', type=float, default=0.8)
 parser.add_argument('--RL_agent', type=str, default='dueling-dqn') # 'dqn', 'bcq', 'rem', 'dueling-dqn'
 parser.add_argument('--prioritized_replay', type=lambda x: (str(x).lower() == 'true'), default=False)   
-parser.add_argument('--max_iters', type=int, default=int(2e4))  # int(2e5)
-parser.add_argument('--minibatch_size', type=int, default=128)
+parser.add_argument('--max_iters', type=int, default=int(2e5))
+parser.add_argument('--minibatch_size', type=int, default=256)
 parser.add_argument('--lr', type=float, default=1e-3)
 args = parser.parse_args()
 
@@ -36,25 +45,16 @@ if __name__ == '__main__':
     minibatch_size = args.minibatch_size
     lr = args.lr
     subsample_size = None # None, 500
-    data_dir = os.path.expanduser('~/ope_mnar/data/20210501')
-    export_dir = os.path.expanduser('~/ope_mnar/output/sepsis/batch_rl')
-    shift_bloc = True
-    shift_bloc_str = '_shiftbloc' if shift_bloc else ''
-    use_complete_trajs = False
-    if use_complete_trajs:
-        full_trajs_str = '_full_trajs'
-    else:
-        full_trajs_str = ''
-    if subsample_size is None:
-        data_path = os.path.join(data_dir, f'sepsis_processed{full_trajs_str}_state_action3_reward{shift_bloc_str}_split1.csv')
-    else:
-        data_path = os.path.join(data_dir, f'sepsis_processed{full_trajs_str}_state_action3_reward{shift_bloc_str}_split1_sample{subsample_size}.csv')
-
-    data = pd.read_csv(data_path)
-    full_data = pd.read_csv(os.path.join(data_dir, f'sepsis_processed_state_action3_reward{shift_bloc_str}.csv'))
+    data_dir = os.path.expanduser('~/Data/mimic-iii')
+    export_dir = os.path.expanduser('~/Projects/ope_mnar/output/sepsis/batch_rl')
     pathlib.Path(export_dir).mkdir(parents=True, exist_ok=True)
-    with open(os.path.join(data_dir, 'state_features.txt')) as f:
-        state_features = f.read().split()
+    
+    shift_bloc = True
+    exclude_icu_morta = True
+    use_complete_trajs = False
+    shift_bloc_str = '_shiftbloc' if shift_bloc else ''
+    exclude_icu_morta_str = '_exclude_icu_morta' if exclude_icu_morta else ''
+    full_trajs_str = '_full_trajs' if use_complete_trajs else ''
 
     ########################################################################
     ##                    Specify state features
@@ -80,7 +80,11 @@ if __name__ == '__main__':
     ##                    Process data then add to bufffer
     ########################################################################
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    data_scaled = data.copy(deep=True)
+    if subsample_size is None:
+        data_path = os.path.join(data_dir, f'sepsis_processed{full_trajs_str}_state_action{num_actions}_reward{exclude_icu_morta_str}{shift_bloc_str}_split1.csv')
+    else:
+        data_path = os.path.join(data_dir, f'sepsis_processed{full_trajs_str}_state_action{num_actions}_reward{exclude_icu_morta_str}{shift_bloc_str}_split1_sample{subsample_size}.csv')
+    data = pd.read_csv(data_path)
 
     ## scale features
     scaler_path = os.path.join(data_dir, f'feature{state_dim}_scaler.pkl')
@@ -88,6 +92,7 @@ if __name__ == '__main__':
         with open(scaler_path,'rb') as f:
             scaler = pickle.load(f)
     else:
+        full_data = pd.read_csv(os.path.join(data_dir, f'sepsis_processed_state_action{num_actions}_reward{exclude_icu_morta_str}{shift_bloc_str}.csv'))
         scaler = MinMaxScaler()
         scaler.fit(full_data[features_cols])
         with open(scaler_path,'wb') as f:
@@ -95,11 +100,13 @@ if __name__ == '__main__':
 
     print(f'data_min_: {scaler.data_min_}')
     print(f'data_max_: {scaler.data_max_}')
-    data_scaled[features_cols] = scaler.transform(data[features_cols]) 
-    data = data_scaled.copy(deep=True)
-
-    id_col = 'icustayid'
+    data[features_cols] = scaler.transform(data[features_cols]) 
+    
+    ########################################################################
+    ##                    Specify rewards
+    ########################################################################
     custom_reward_name = 'raghu'
+    
     ## custom reward function
     custom_reward_name = 'raghu_v1'
     c0 = -0.5
@@ -120,15 +127,17 @@ if __name__ == '__main__':
     data = data.groupby('icustayid').apply(custom_reward)
 
     if custom_reward_name == 'raghu':   
-        reward_col = 'raghu_reward' # without the dominant term at terminal step
+        reward_col = 'reward_raghu' # without the dominant term at terminal step
     else:
         reward_col = 'reward_' + custom_reward_name
 
+    ########################################################################
+    ##                    Load data to replay buffer
+    ########################################################################
+    print('Load data into buffer...')
+    id_col = 'icustayid'
     id_list = data[id_col].unique()
     T = data.groupby(id_col).size().max()
-
-    # add data to replay buffer
-    print('Load data into buffer...')
     print(f'Number of trajectories: {len(id_list)}')
     if prioritized_replay:
         buffer = ReplayBufferPER(state_dim=state_dim, buffer_size=data.shape[0], device=device)
