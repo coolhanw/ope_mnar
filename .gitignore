@@ -137,3 +137,4 @@ models/
 data/
 .DS_Store
 .vscode/
+.csh
