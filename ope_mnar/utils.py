@@ -445,6 +445,24 @@ class ExpoTiltingClassifierMNAR():
                     f'estimating equation (gamma={round(gamma_hat_step2[0],3)}):'
                 )
                 print(np.mean(self.estEq_full((gamma_hat_step2[0], )), axis=0))
+
+
+                #######################
+                ## for debug purpose
+                # gamma_grid = np.linspace(start=-2, stop=8, num=50)
+                # step2_func_grid = []
+                # for g in gamma_grid:
+                #     step2_func_grid.append(step2_func((g,)))
+                # plt.plot(gamma_grid, np.array(step2_func_grid))
+                # plt.axvline(gamma_hat_step2[0], color='red')
+                # plt.xlabel('gamma')
+                # plt.ylabel('objective func')
+                # # plt.title(f'gamma hat={round(gamma_hat[0],3)}')
+                # plt.tight_layout()
+                # plt.savefig(os.path.expanduser(f'~/mnar_obj_func_gamma_{round(gamma_hat_step2[0],3)}.png'))
+                # plt.close()
+                #######################
+
             _ = gc.collect()
             return gamma_hat_step2
 

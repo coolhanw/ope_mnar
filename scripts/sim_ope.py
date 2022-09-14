@@ -94,7 +94,10 @@ if __name__ == '__main__':
         elif dropout_scheme in ['3.19','3.20']:
             missing_mechanism = 'mnar'
             instrument_var_index = 1
-            bandwidth_factor = 7.5
+            if dropout_scheme == '3.19':
+                bandwidth_factor = 7.5
+            elif dropout_scheme == '3.20':
+                bandwidth_factor = 2.5
         else :
             missing_mechanism = 'mar' 
 
