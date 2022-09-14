@@ -30,7 +30,7 @@ except:
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--discount', type=float, default=0.8)
-parser.add_argument('--RL_agent', type=str, default='dueling-dqn') # 'dqn', 'bcq', 'rem', 'dueling-dqn'
+parser.add_argument('--RL_agent', type=str, default='dqn') # 'dqn', 'bcq', 'rem', 'dueling-dqn'
 parser.add_argument('--prioritized_replay', type=lambda x: (str(x).lower() == 'true'), default=False)   
 parser.add_argument('--max_iters', type=int, default=int(2e5))
 parser.add_argument('--minibatch_size', type=int, default=256)
@@ -98,8 +98,7 @@ if __name__ == '__main__':
         with open(scaler_path,'wb') as f:
             pickle.dump(scaler, f)
 
-    print(f'data_min_: {scaler.data_min_}')
-    print(f'data_max_: {scaler.data_max_}')
+    print(pd.DataFrame({'Variable': features_cols, 'Min': scaler.data_min_, 'Max': scaler.data_max_}))
     data[features_cols] = scaler.transform(data[features_cols]) 
     
     ########################################################################
