@@ -21,8 +21,10 @@ __all__ = [
     'SimEnv', 'VectorSimEnv', 'VectorSepsisEnv'
 ]
 
+
 def sigmoid(x, beta=1):
     return 1 / (1 + np.exp(-beta * x))
+
 
 def constant_fn(val):
     """Create a function that returns a constant.
@@ -38,6 +40,7 @@ def constant_fn(val):
         return val
 
     return func
+
 
 class normcdf():
     """Transform the state using normal CDF."""
@@ -56,6 +59,7 @@ class normcdf():
         return norm.ppf(
             np.clip(S, a_min=self.scaled_low, a_max=self.scaled_high))
 
+
 class iden():
     """Identity transformation."""
 
@@ -71,6 +75,7 @@ class iden():
 
     def inverse_transform(self, S):
         return S
+
 
 class MinMaxScaler():
     """Transform the state onto [0,1] using min and max value."""
@@ -91,6 +96,7 @@ class MinMaxScaler():
     def inverse_transform(self, S):
         return S * (self.data_max_ - self.data_min_) + self.data_min_
 
+
 class ExpoTiltingClassifierMNAR():
     """Implement the semiparametric IPW method for nonignorable missingness.
     
@@ -103,7 +109,6 @@ class ExpoTiltingClassifierMNAR():
             u (np.ndarray): dimension (k,u_dim)
             y (np.ndarray): dimension (k,y_dim)
             delta (np.ndarray): dimension (k,1)
-            bandwidth (np.ndarray): dimension (k,u_dim,u_dim)
             
         Returns:
             expg_hat (callable)
@@ -446,7 +451,6 @@ class ExpoTiltingClassifierMNAR():
                 )
                 print(np.mean(self.estEq_full((gamma_hat_step2[0], )), axis=0))
 
-
                 #######################
                 ## for debug purpose
                 # gamma_grid = np.linspace(start=-2, stop=8, num=50)
@@ -521,6 +525,10 @@ class ExpoTiltingClassifierMNAR():
                         bandwidth_factor * np.std(u[z == i], ddof=1) *
                         (np.sum(z == i)**(-1 / 3)))
                 else:
+                    assert all(
+                        len(np.unique(u[z == i, col])) > 1
+                        for col in range(u.shape[1])
+                    ), 'each column in U should contain multiple values, please try increasing the sample size'
                     bandwidth[z == i] = np.square(bandwidth_factor) * np.cov(
                         u[z == i], rowvar=False) * np.square(
                             np.sum(z == i)**(-1 / 3))
@@ -579,6 +587,7 @@ class ExpoTiltingClassifierMNAR():
             self.L = log_dict.get('L', None)
             self.gamma_hat = log_dict.get('gamma_hat', None)
 
+
 class SimEnv(gym.Env):
 
     def __init__(self,
@@ -624,7 +633,7 @@ class SimEnv(gym.Env):
         if dropout_model:
             assert callable(dropout_model)
         else:
-            dropout_model = constant_fn(val=0) # no dropout
+            dropout_model = constant_fn(val=0)  # no dropout
         self.dropout_model = dropout_model
 
         self.instrument_var_index = 1
@@ -655,7 +664,7 @@ class SimEnv(gym.Env):
                                 a_min=self.low,
                                 a_max=self.high)
         self.states_history.append(self.last_obs)
-        
+
         return self.last_obs
 
     def seed(self, seed=None):
@@ -691,9 +700,9 @@ class SimEnv(gym.Env):
                                         rng=self._np_random)
         S_next = np.clip(S_next, a_min=self.low, a_max=self.high)
         reward = self.reward_model(obs=self.last_obs,
-                                    action=action,
-                                    next_obs=S_next,
-                                    rng=self._np_random)
+                                   action=action,
+                                   next_obs=S_next,
+                                   rng=self._np_random)
         self.states_history.append(S_next)
         self.rewards_history.append(reward)
 
@@ -724,10 +733,11 @@ class SimEnv(gym.Env):
             'dropout_prob':
             dropout_prob  # dropout probability of the current step
         }
-        
+
         self.last_obs = S_next.tolist()
 
         return S_next, reward, done, env_infos
+
 
 class VectorSimEnv(VectorEnv):
 
@@ -949,15 +959,11 @@ class VectorSimEnv(VectorEnv):
         r"""Clean up the extra resources e.g. beyond what's in this base class. """
         pass
 
+
 class VectorSimSynthEnv(VectorEnv):
     """Vectorized environment with learned model, assume no dropout."""
 
-    def __init__(
-            self,
-            num_envs,
-            T=20,
-            env_config_file=None,
-            dtype=np.float32):
+    def __init__(self, num_envs, T=20, env_config_file=None, dtype=np.float32):
         """
         Args:
             num_envs (int): number of environments in parallel
@@ -1145,7 +1151,9 @@ class VectorSimSynthEnv(VectorEnv):
         r"""Clean up the extra resources e.g. beyond what's in this base class. """
         pass
 
+
 class VectorSepsisEnv(VectorEnv):
+
     def __init__(self,
                  num_envs,
                  T=20,
@@ -1158,11 +1166,14 @@ class VectorSepsisEnv(VectorEnv):
                  low=-np.inf,
                  high=np.inf,
                  dtype=np.float32):
-        
+
         action_space = Discrete(n=action_levels)
         state_list = static_state_list + dynamic_state_list
         state_dim = len(state_list)
-        observation_space = Box(low=low, high=high, shape=(state_dim, ), dtype=dtype)
+        observation_space = Box(low=low,
+                                high=high,
+                                shape=(state_dim, ),
+                                dtype=dtype)
         super().__init__(num_envs, observation_space, action_space)
 
         self.vectorized = True
@@ -1271,21 +1282,20 @@ class VectorSepsisEnv(VectorEnv):
 class MLPModule(pl.LightningModule):
     """Multilayer perceptron module."""
 
-    def __init__(
-            self,
-            input_dim,
-            output_dim,
-            hidden_sizes=[64, 64],
-            hidden_nonlinearity=torch.relu,
-            hidden_w_init=nn.init.xavier_normal_,
-            hidden_b_init=nn.init.zeros_,
-            output_nonlinearities=None,
-            output_bias=True,
-            output_w_inits=nn.init.xavier_normal_,
-            output_b_inits=nn.init.zeros_,
-            batch_normalization=False,
-            lr=1e-3,
-            loss=F.mse_loss):
+    def __init__(self,
+                 input_dim,
+                 output_dim,
+                 hidden_sizes=[64, 64],
+                 hidden_nonlinearity=torch.relu,
+                 hidden_w_init=nn.init.xavier_normal_,
+                 hidden_b_init=nn.init.zeros_,
+                 output_nonlinearities=None,
+                 output_bias=True,
+                 output_w_inits=nn.init.xavier_normal_,
+                 output_b_inits=nn.init.zeros_,
+                 batch_normalization=False,
+                 lr=1e-3,
+                 loss=F.mse_loss):
         super().__init__()
 
         self._hidden_sizes = hidden_sizes
@@ -1363,7 +1373,9 @@ class MLPModule(pl.LightningModule):
         else:
             return y_pred
 
+
 # the following functions will be useful for policy optimization
+
 
 def get_next_block_idx(current_block_idx, K_n, K_T):
     n, t = current_block_idx
@@ -1373,6 +1385,7 @@ def get_next_block_idx(current_block_idx, K_n, K_T):
             return [1, t + 1]
         else:
             return None
+
 
 def get_idx_pos(current_block_idx, n, T, n_min, T_min):
     """given the current block index return the corresponding position"""
