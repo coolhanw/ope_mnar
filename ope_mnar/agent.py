@@ -1880,8 +1880,7 @@ class OfflineQLearn(object):
                         self.scaler.data_max_) == np.inf:
             self.scaler.fit(obs_concat)
         scaled_obs_concat = self.scaler.transform(obs_concat)
-        print(f'self.scaler.data_min_: {self.scaler.data_min_}')
-        print(f'self.scaler.data_max_: {self.scaler.data_max_}')
+
         if isinstance(knots, str) and knots == 'equivdist':
             upper = scaled_obs_concat.max(axis=0)
             lower = scaled_obs_concat.min(axis=0)
