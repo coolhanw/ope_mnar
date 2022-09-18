@@ -111,6 +111,7 @@ if __name__ == '__main__':
     c0 = -0.5
     c1 = -0.25
     c2 = -1
+    c3 = 1
 
     def custom_reward(rows):
         next_sofa = rows['SOFA'].iloc[1:].values
@@ -118,7 +119,7 @@ if __name__ == '__main__':
         next_lactate = rows['Arterial_lactate'].iloc[1:].values
         curr_lactate = rows['Arterial_lactate'].iloc[:-1].values
         reward = ((next_sofa == curr_sofa) & (next_sofa > 0)) * c0 + (next_sofa - curr_sofa) * c1 \
-            + np.tanh(next_lactate - curr_lactate) * c2
+            + np.tanh(next_lactate - curr_lactate) * c2 + c3
         reward_full = np.append(reward, 0)
         rows['reward_' + custom_reward_name] = reward_full
         return rows
