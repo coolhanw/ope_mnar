@@ -1507,7 +1507,6 @@ class OfflineQLearn(object):
 
         # add some additional tracking
         if verbose and probT_train is not None:
-            print('probT_train', probT_train)
             prob_pred_df = pd.DataFrame({
                 'X1': obs_train[:, 0],
                 'X2': obs_train[:, 1],
