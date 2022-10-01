@@ -697,7 +697,7 @@ if __name__ == '__main__':
             dropout_model_type='linear',
             dropout_obs_count_thres=dropout_obs_count_thres,
             dropout_scale_obs=False,
-            dropout_include_reward=True,
+            dropout_include_reward=True, # True, False
             missing_mechanism=missing_mechanism,
             instrument_var_index=instrument_var_index,
             mnar_y_transform=mnar_y_transform,
@@ -806,7 +806,7 @@ if __name__ == '__main__':
             dropout_model_type='linear',
             dropout_obs_count_thres=dropout_obs_count_thres,
             dropout_scale_obs=False,
-            dropout_include_reward=True,
+            dropout_include_reward=True, # True, False
             missing_mechanism=missing_mechanism,
             instrument_var_index=instrument_var_index,
             mnar_y_transform=mnar_y_transform,

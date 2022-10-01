@@ -728,7 +728,7 @@ if __name__ == '__main__':
             basis_scale_factor=basis_scale_factor,
             dropout_model_type=dropout_model_type,
             dropout_scale_obs=True,
-            dropout_include_reward=True,
+            dropout_include_reward=True, # True, False
             model_suffix=suffix,
             prob_lbound=prob_lbound,
             eval_env=env,

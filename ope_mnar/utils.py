@@ -452,8 +452,8 @@ class ExpoTiltingClassifierMNAR():
                 print(np.mean(self.estEq_full((gamma_hat_step2[0], )), axis=0))
 
                 #######################
-                ## for debug purpose
-                # gamma_grid = np.linspace(start=-2, stop=8, num=50)
+                # # for debug purpose
+                # gamma_grid = np.linspace(start=-10, stop=10, num=50)
                 # step2_func_grid = []
                 # for g in gamma_grid:
                 #     step2_func_grid.append(step2_func((g,)))
@@ -536,6 +536,7 @@ class ExpoTiltingClassifierMNAR():
                         z == i] = np.square(bandwidth_factor) * np.cov(
                             u[z == i], rowvar=False) * np.square(
                                 np.sum(z == i)**(-1 / 3))
+            print(self.bandwidth_dict)
         self.gamma_hat = self.estimate_gamma(L=L,
                                              z=z,
                                              u=u,

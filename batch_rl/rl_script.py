@@ -6,7 +6,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from sklearn.preprocessing import MinMaxScaler
+# from sklearn.preprocessing import MinMaxScaler
 import matplotlib.pyplot as plt
 import seaborn as sns
 import argparse
@@ -18,6 +18,7 @@ try:
     from batch_rl.bcq import discrete_BCQ
     from batch_rl.rem import REM
     from batch_rl.utils import ReplayBuffer, ReplayBufferPER
+    from ope_mnar.utils import MinMaxScaler
 except:
     import sys
     sys.path.append(os.path.expanduser('~/Projects/ope_mnar/batch_rl'))
@@ -26,6 +27,7 @@ except:
     from batch_rl.bcq import discrete_BCQ
     from batch_rl.rem import REM
     from batch_rl.utils import ReplayBuffer, ReplayBufferPER
+    from ope_mnar.utils import MinMaxScaler
 
 
 parser = argparse.ArgumentParser()

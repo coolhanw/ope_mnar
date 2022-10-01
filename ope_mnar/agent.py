@@ -583,6 +583,7 @@ class OfflineQLearn(object):
                       action_col='action',
                       reward_col='reward',
                       id_col='id',
+                      dropout_col=None,
                       subsample_id=None,
                       reward_transform=None,
                       burn_in=0,
@@ -600,6 +601,7 @@ class OfflineQLearn(object):
             action_col (str): name of action column
             reward_col (str): name of reward column
             id_col (str): name of reward column
+            dropout_col (str): name of the binary column that indicates dropout event
             subsample_id (list): ids of subsample to be imported
             reward_transform (callable): transformation funtion of reward
             burn_in (int): length of burn-in period
@@ -652,19 +654,21 @@ class OfflineQLearn(object):
                     survival_prob_traj = None
                     dropout_prob_traj = None
                 dropout_next_traj = np.zeros_like(reward_traj)
-                if len(dropout_next_traj) < self.max_T:
-                    dropout_next_traj[-1] = 1
+                if dropout_col in tmp.columns:
+                    dropout_next_traj = tmp[dropout_col].values
+                elif len(dropout_next_traj) < self.max_T:
+                        dropout_next_traj[-1] = 1
             else:
                 dropout_prob_traj = tmp['custom_dropout_prob'].values
                 if dropout_prob_traj[-1] is None:
                     dropout_prob_traj[-1] = -1
                 survival_prob_traj = np.append(
                     1, (1 - dropout_prob_traj).cumprod())[:-1]
-                dropout_next_traj = np.zeros_like(reward_traj)
                 dropout_index = np.where(
                     np.random.uniform(
                         low=0, high=1, size=dropout_prob_traj.shape) <
                     dropout_prob_traj)[0]
+                dropout_next_traj = np.zeros_like(reward_traj)
                 if len(dropout_index) > 0:
                     dropout_index = dropout_index.min()
                     dropout_next_traj[dropout_index] = 1
@@ -682,7 +686,7 @@ class OfflineQLearn(object):
 
             self.total_N += T
             if T < self.max_T:
-                incomplete_cnt += 1
+                incomplete_cnt += sum(dropout_next_traj) # 1
 
             if T > burn_in:
                 self.masked_buffer[(i)] = [
@@ -701,7 +705,7 @@ class OfflineQLearn(object):
                 self.misc_buffer[(i)]['mnar_nextobs_arr'] = np.vstack([
                     mnar_nextobs_arr[burn_in + 1:],
                     np.zeros(shape=(1, mnar_nextobs_arr.shape[1])) * np.nan
-                ])
+                ]) # shift one step
             if mnar_noninstrument_var is not None:
                 mnar_noninstrument_arr = tmp[mnar_noninstrument_var].values
                 self.misc_buffer[(
@@ -726,6 +730,7 @@ class OfflineQLearn(object):
                               action_col='action',
                               reward_col='reward',
                               id_col='id',
+                              dropout_col=None,
                               reward_transform=None,
                               burn_in=0,
                               **kwargs):
@@ -740,6 +745,7 @@ class OfflineQLearn(object):
             action_col (str): name of action column
             reward_col (str): name of reward column
             id_col (str): name of reward column
+            dropout_col (str): name of the binary column that indicates dropout event
             subsample_id (list): ids of subsample to be imported
             reward_transform (callable): transformation funtion of reward
             burn_in (int): length of burn-in period
@@ -782,7 +788,9 @@ class OfflineQLearn(object):
                 dropout_prob_traj = None
 
             dropout_next_traj = np.zeros_like(reward_traj)
-            if len(dropout_next_traj) < self.max_T:
+            if dropout_col in tmp.columns:
+                dropout_next_traj = tmp[dropout_col].values
+            elif len(dropout_next_traj) < self.max_T:
                 dropout_next_traj[-1] = 1
 
             if T > burn_in:
@@ -1325,7 +1333,12 @@ class OfflineQLearn(object):
                             filename=self.dropout_model_filename,
                             compress=3)
         else:
-            if mnar_nextobs_arr is None:
+            if include_reward:
+                # use reward as outcome
+                y_arr = rewards
+                y_dim = 1
+                print('use the reward as outcome')
+            elif mnar_nextobs_arr is None:
                 if mnar_y_transform is not None:
                     orig_next_obs = self.fitted_dropout_model[
                         'scaler'].inverse_transform(
@@ -1333,9 +1346,9 @@ class OfflineQLearn(object):
                     y_arr = mnar_y_transform(
                         np.hstack([orig_next_obs,
                                    rewards.reshape(-1, 1)]))
-                    print(f'y_arr:{y_arr}')
-                elif include_reward:
-                    y_arr = rewards
+                    # print(f'y_arr:{y_arr}')
+                # elif include_reward:
+                #     y_arr = rewards
                 else:
                     y_arr = next_obs
                 if len(y_arr.shape) == 1 or (len(y_arr.shape) == 2
@@ -1352,6 +1365,10 @@ class OfflineQLearn(object):
                     y_dim = y_arr.shape[1]
                 y_arr = y_arr.reshape(-1, y_dim)
             print(f'y_dim: {y_dim}')
+            if self._scale_obs:
+                self._y_arr_scaler = MinMaxScaler()
+                self._y_arr_scaler.fit(y_arr)
+                y_arr = self._y_arr_scaler.transform(y_arr)
             if mnar_noninstrument_arr is None:
                 if not isinstance(instrument_var_index,
                                   np.ndarray) and not hasattr(
@@ -1375,6 +1392,10 @@ class OfflineQLearn(object):
                 else:
                     u_dim = mnar_noninstrument_arr.shape[1]
                 u_arr = mnar_noninstrument_arr.reshape(-1, u_dim)
+            if self._scale_obs:
+                self._u_arr_scaler = MinMaxScaler()
+                self._u_arr_scaler.fit(u_arr)
+                u_arr = self._u_arr_scaler.transform(u_arr)
             if mnar_instrument_arr is None:
                 assert instrument_var_index is not None, 'please provide the name of the instrument variable, otherwise there is identifibility issue.'
                 z_arr = obs[:, instrument_var_index]  # (n,)
@@ -1384,6 +1405,7 @@ class OfflineQLearn(object):
                 z_min, z_max = z_arr.min(), z_arr.max()
                 self.instrument_disc_bins = np.quantile(
                     a=z_arr, q=np.linspace(0, 1, L + 1))  # divide by quantile
+                # make sure bins are non-overlap
                 bins_nonoverlap = []
                 for i in range(len(self.instrument_disc_bins)):
                     if not bins_nonoverlap or bins_nonoverlap[
@@ -1558,7 +1580,7 @@ class OfflineQLearn(object):
                         np.nanquantile(logit_pred_train, 0.5),
                         np.nanquantile(logit_pred_train, 0.75),
                         np.nanmax(logit_pred_train)))
-            if True:
+            if False:
                 fig, ax = plt.subplots(nrows=2,
                                     ncols=2,
                                     figsize=(5 * 2, 4 * 2))
@@ -1598,7 +1620,6 @@ class OfflineQLearn(object):
                     figure_name = f"prob_est_dist_missing{round(self.dropout_rate,1)}_mar.png"
                 plt.savefig(os.path.join(export_dir, figure_name))
                 plt.close()
-
 
     def estimate_missing_prob(self,
                       missing_mechanism=None,
@@ -1675,12 +1696,16 @@ class OfflineQLearn(object):
                 rewards = R_traj[self.
                                  dropout_obs_count_thres:traj_len].reshape(
                                      -1, 1)
-                if mnar_nextobs_arr is None:
+                if self._include_reward:
+                    # use reward as outcome
+                    y_arr = rewards
+                    y_dim = 1
+                elif mnar_nextobs_arr is None:
                     if self._mnar_y_transform is not None:
                         y_arr = self._mnar_y_transform(
                             np.hstack([orig_next_obs, rewards]))
-                    elif self._include_reward:
-                        y_arr = rewards
+                    # elif self._include_reward:
+                    #     y_arr = rewards
                     else:
                         y_arr = next_obs
                     if len(y_arr.shape) == 1 or (len(y_arr.shape) == 2
@@ -1697,6 +1722,9 @@ class OfflineQLearn(object):
                     else:
                         y_dim = y_arr.shape[1]
                     y_arr = y_arr.reshape(-1, y_dim)
+                if self._scale_obs:
+                    assert hasattr(self, '_y_arr_scaler'), 'scaler for outcome not found'
+                    y_arr = self._y_arr_scaler.transform(y_arr)
                 if mnar_noninstrument_arr is None:
                     if not isinstance(self._instrument_var_index,
                                       np.ndarray) and not hasattr(
@@ -1722,6 +1750,9 @@ class OfflineQLearn(object):
                     else:
                         u_dim = u_arr.shape[1]
                     u_arr = u_arr.reshape(-1, u_dim)
+                if self._scale_obs:
+                    assert hasattr(self, '_u_arr_scaler'), 'scaler for non-instrumental variables is not found'
+                    u_arr = self._u_arr_scaler.transform(u_arr)
                 if mnar_instrument_arr is None:
                     z_arr = obs[:, self._instrument_var_index]
                     z_arr = np.digitize(z_arr, bins=self.instrument_disc_bins)
@@ -1870,8 +1901,12 @@ class OfflineQLearn(object):
             knots (str or np.ndarray): location of knots
         """
         obs_concat = []
-        for i in self.masked_buffer.keys():
-            obs_concat.extend(self.masked_buffer[i][0])
+        if self.masked_buffer:
+            for i in self.masked_buffer.keys():
+                obs_concat.extend(self.masked_buffer[i][0])
+        else:
+            for i in self.holdout_buffer.keys():
+                obs_concat.extend(self.holdout_buffer[i][0])        
         obs_concat = np.array(obs_concat)
         if not hasattr(self.scaler, 'data_min_') or not hasattr(
                 self.scaler, 'data_max_') or np.min(
