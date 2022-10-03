@@ -696,7 +696,7 @@ if __name__ == '__main__':
             target_policy=policy,
             dropout_model_type='linear',
             dropout_obs_count_thres=dropout_obs_count_thres,
-            dropout_scale_obs=False,
+            dropout_scale_obs=False, # True, False
             dropout_include_reward=True, # True, False
             missing_mechanism=missing_mechanism,
             instrument_var_index=instrument_var_index,
@@ -805,7 +805,7 @@ if __name__ == '__main__':
             target_policy=policy,
             dropout_model_type='linear',
             dropout_obs_count_thres=dropout_obs_count_thres,
-            dropout_scale_obs=False,
+            dropout_scale_obs=False, # True, False
             dropout_include_reward=True, # True, False
             missing_mechanism=missing_mechanism,
             instrument_var_index=instrument_var_index,

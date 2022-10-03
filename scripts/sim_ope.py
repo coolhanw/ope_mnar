@@ -727,7 +727,7 @@ if __name__ == '__main__':
             grid_search=grid_search,
             basis_scale_factor=basis_scale_factor,
             dropout_model_type=dropout_model_type,
-            dropout_scale_obs=True,
+            dropout_scale_obs=False, # True, False
             dropout_include_reward=True, # True, False
             model_suffix=suffix,
             prob_lbound=prob_lbound,

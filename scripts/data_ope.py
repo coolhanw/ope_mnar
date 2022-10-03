@@ -58,13 +58,13 @@ parser.add_argument('--eval_behavior_policy',
                     default=False)
 parser.add_argument('--exclude_icu_morta',
                     type=lambda x: (str(x).lower() == 'true'),
-                    default=False)
+                    default=True)
 parser.add_argument('--use_complete_trajs',
                     type=lambda x: (str(x).lower() == 'true'),
-                    default=True)
+                    default=False)
 parser.add_argument('--apply_custom_dropout',
                     type=lambda x: (str(x).lower() == 'true'),
-                    default=True)
+                    default=False)
 args = parser.parse_args()
 
 if __name__ == '__main__':
@@ -126,7 +126,7 @@ if __name__ == '__main__':
     else:
         synthetic_str = ''
     
-    bandwidth_factor = 7.5 # 7.5, 2.5
+    bandwidth_factor = 5 # 7.5, 2.5
     subsample_size = 500  # None, 250
     if subsample_size is None:
         data_path = os.path.join(
@@ -142,6 +142,14 @@ if __name__ == '__main__':
     holdout_df['mechvent'] = holdout_df['mechvent'].astype('int')
     with open(os.path.join(data_dir, 'state_features.txt')) as f:
         features_cols = f.read().split()
+
+    demog = pd.read_csv(os.path.join(data_dir, "demog.csv"), sep='|')
+    demog['icustay_id'] = (demog['icustay_id'] - 2e5).astype('int')
+    demog = demog.sort_values(by='icustay_id').reset_index(drop=True)
+    demog.rename(columns={'icustay_id': 'icustayid'}, inplace=True)
+    demog['outtime'] = demog['outtime'].apply(pd.to_datetime, unit='s')
+    traj_df = demog[['icustayid', 'outtime']].merge(traj_df, how='right', on='icustayid')
+    traj_df['presumed_onset'] = traj_df['presumed_onset'].apply(pd.to_datetime, unit='s')
 
     ########################################################################
     ##                    specify rewards
@@ -231,11 +239,11 @@ if __name__ == '__main__':
         downsample_size = min(
             downsample_size, subsample_size) if subsample_size is not None else downsample_size
         # for i in range(math.ceil(len(id_list) / downsample_size)):
-        for i in range(max(math.ceil(len(id_list) / downsample_size), 50)): # increase #iterations
+        for i in range(max(math.ceil(len(id_list) / downsample_size), 250)): # Monte Carlo iterations
             # after setting seed, subsample ids in each iteration will be the same for CC and IPW estimator
             # we can then calculate pairwise difference
             subsample_id = np.random.choice(
-                id_list, size=downsample_size, replace=False)
+                id_list, size=downsample_size, replace=False) # replace=True
             subsample_id_list.append(tuple(subsample_id))
     else:
         subsample_id_list = [tuple(id_list)]
@@ -243,20 +251,81 @@ if __name__ == '__main__':
     ## custom dropout model
     if use_complete_trajs and apply_custom_dropout:
         def custom_dropout_model(rows):
-            # discharge
-            FiO2 = rows['FiO2_1'].values
+            # # discharge - model 0:
+            # FiO2 = rows['FiO2_1'].values
+            # HR = rows['HR'].values
+            # RR = rows['RR'].values
+            # GCS = rows['GCS'].values
+            # I1 = 1 * (FiO2 <= 0.6)
+            # I2 = 1 * np.logical_and(HR >= 60, HR <= 100)
+            # I3 = 1 * np.logical_and(RR >= 10, RR <= 30)
+            # I4 = 1 * (GCS >= 14)
+            # c1 = -0.8
+            # c2 = -0.8
+            # c3 = -0.6
+            # c4 = -1.5
+            # dropout_prob = 1 / (1 + np.exp(4.5 + c1 * I1[:-1] + c2 * I2[:-1] + c3 * I3[:-1] + c4 * I4[1:]))
+            
+            # discharge - model 1:
+            SpO2 = rows['SpO2'].values
             HR = rows['HR'].values
             RR = rows['RR'].values
-            GCS = rows['GCS'].values
-            I1 = 1 * (FiO2 <= 0.6)
-            I2 = 1 * np.logical_and(HR >= 60, HR <= 100)
-            I3 = 1 * np.logical_and(RR >= 10, RR <= 30)
-            I4 = 1 * (GCS >= 14)
-            c1 = -0.8
-            c2 = -0.8
-            c3 = -0.6
-            c4 = -1.5
-            dropout_prob = 1 / (1 + np.exp(4.5 + c1 * I1[:-1] + c2 * I2[:-1] + c3 * I3[:-1] + c4 * I4[1:]))
+            SOFA = rows['SOFA'].values
+            c0 = 0.1
+            c1 = 0.01
+            c2 = 0.002
+            c3 = 0.004
+            c4 = -0.12
+            dropout_prob = 1 / (1 + np.exp(c0 + c1 * SpO2[:-1] + c2 * HR[:-1] + c3 * RR[:-1] + c4 * SOFA[1:]))
+            rows['custom_dropout_prob'] = np.append(dropout_prob, None)
+
+            # # discharge - model 3:
+            # SpO2 = rows['SpO2'].values
+            # HR = rows['HR'].values
+            # RR = rows['RR'].values
+            # Arterial_lactate = rows['Arterial_lactate'].values
+            # c0 = 0.1
+            # c1 = 0.01
+            # c2 = 0.002
+            # c3 = 0.004
+            # c4 = 0.1
+            # dropout_prob = 1 / (1 + np.exp(c0 + c1 * SpO2[:-1] + c2 * HR[:-1] + c3 * RR[:-1] + c4 * Arterial_lactate[1:]))
+
+            # # discharge - model 4:
+            # SpO2 = rows['SpO2'].values
+            # HR = rows['HR'].values
+            # RR = rows['RR'].values
+            # GCS = rows['GCS'].values
+            # c0 = 0.1
+            # c1 = 0.01
+            # c2 = 0.002
+            # c3 = 0.004
+            # c4 = -0.1
+            # dropout_prob = 1 / (1 + np.exp(c0 + c1 * SpO2[:-1] + c2 * HR[:-1] + c3 * RR[:-1] + c4 * GCS[1:]))
+
+            # # mortality - model 1:
+            # SpO2 = rows['SpO2'].values
+            # HR = rows['HR'].values
+            # RR = rows['RR'].values
+            # SOFA = rows['SOFA'].values
+            # c0 = -25
+            # c1 = 0.32
+            # c2 = 0.01
+            # c3 = 0.05
+            # c4 = -0.2
+            # dropout_prob = 1 / (1 + np.exp(c0 + c1 * SpO2[:-1] + c2 * HR[:-1] + c3 * RR[:-1] + c4 * SOFA[1:]))
+
+            # # mortality - model 2:
+            # SpO2 = rows['SpO2'].values
+            # HR = rows['HR'].values
+            # RR = rows['RR'].values
+            # reward = rows[reward_col].values
+            # c0 = -30
+            # c1 = 0.32
+            # c2 = 0.01
+            # c3 = 0.05
+            # c4 = 1
+            # dropout_prob = 1 / (1 + np.exp(c0 + c1 * SpO2[:-1] + c2 * HR[:-1] + c3 * RR[:-1] + c4 * reward[:-1]))
             
             rows['custom_dropout_prob'] = np.append(dropout_prob, None)
             return rows
@@ -266,18 +335,36 @@ if __name__ == '__main__':
         print(traj_df['custom_dropout_prob'].describe())
 
     ## custom dropout indicator 
-    if not args.exclude_icu_morta and not apply_custom_dropout:
-        ## treat early death in ICU as dropout
+    if not args.use_complete_trajs:
+        print('apply custom dropout definition')
+        dropout_col_name = 'custom_dropout' # this col name is used as identifier for custom dropout, do not alter it
+
+        # # early death in ICU as dropout
+        # def mark_terminal_event(rows):
+        #     early_morta = (rows['died_within_48h_of_out_time'].iloc[0] == 1) & (rows['delay_end_of_record_and_discharge_or_death'].iloc[0] < 24)
+        #     rows[dropout_col_name] = 0
+        #     if early_morta:
+        #         rows[dropout_col_name].iloc[-1] = 1
+        #     return rows
+
+        # # early discharge: when the trajectory length is shorter than T(max_horizon)
+        # def mark_terminal_event(rows):
+        #     early_morta = (rows['died_within_48h_of_out_time'].iloc[0] == 1) & (rows['delay_end_of_record_and_discharge_or_death'].iloc[0] < 24)
+        #     rows[dropout_col_name] = 0
+        #     if len(rows) < T:
+        #         rows[dropout_col_name].iloc[-1] = 1
+        #     return rows     
+        
+        # early discharge: only when there is outtime present in the time window
         def mark_terminal_event(rows):
             early_morta = (rows['died_within_48h_of_out_time'].iloc[0] == 1) & (rows['delay_end_of_record_and_discharge_or_death'].iloc[0] < 24)
-            col_name = 'custom_dropout'
-            rows[col_name] = 0
-            if early_morta:
-                rows[col_name].iloc[-1] = 1
-            return rows
+            rows[dropout_col_name] = 0
+            if len(rows) < T and rows['outtime'].iloc[0] <= rows['presumed_onset'].iloc[0] + pd.Timedelta(52, unit='h'):
+                rows[dropout_col_name].iloc[-1] = 1
+            return rows        
         
         traj_df = traj_df.groupby('icustayid').apply(func=mark_terminal_event)
-        
+        print('number of dropout cases:', traj_df[dropout_col_name].sum())
 
     ########################################################################
     ##                    specify features
@@ -329,10 +416,10 @@ if __name__ == '__main__':
     traj_df['RR_normal'] = 1. * ((traj_df['RR'] >= 10) & (traj_df['RR'] <= 30))
     traj_df['GCS_normal'] = 1. * (traj_df['GCS'] >= 14)
     
-    mnar_instrument_var = 'GCS_disc' # 'GCS_disc', 'PT_disc', 'Hb_disc', 'Arterial_pH_disc'
+    mnar_instrument_var = 'Hb_disc' # 'GCS_disc', 'PT_disc', 'Hb_disc', 'Arterial_pH_disc'
     mnar_instrument_var_index = None
-    mnar_nextobs_var = ['GCS_normal'] # ['SOFA'], ['Arterial_lactate'], ['GCS'], ['GCS_normal']
-    mnar_noninstrument_var = ['FiO2_1_normal','HR_normal','RR_normal'] # ['FiO2_1_normal','HR_normal','RR_normal'], ['SpO2','HR','RR']
+    mnar_nextobs_var = ['SOFA'] # ['SOFA'], ['Arterial_lactate'], ['GCS'], ['GCS_normal']
+    mnar_noninstrument_var = ['SpO2','HR','RR'] # ['FiO2_1_normal','HR_normal','RR_normal'], ['SpO2','HR','RR']
     include_reward = False # use reward as outcome, this will override mnar_nextobs_var
 
     ########################################################################
@@ -700,7 +787,7 @@ if __name__ == '__main__':
             action_col=action_col,
             reward_col=reward_col,
             id_col=id_col,
-            dropout_col='custom_dropout' if not args.exclude_icu_morta and not apply_custom_dropout else None,
+            dropout_col='custom_dropout' if not args.use_complete_trajs else None,
             subsample_id=subsample_id,  # None
             reward_transform=reward_transform,
             burn_in=burn_in,

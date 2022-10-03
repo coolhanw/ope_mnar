@@ -653,11 +653,12 @@ class OfflineQLearn(object):
                 else:
                     survival_prob_traj = None
                     dropout_prob_traj = None
-                dropout_next_traj = np.zeros_like(reward_traj)
                 if dropout_col in tmp.columns:
+                    print(f'use column {dropout_col} as dropout indicator')
                     dropout_next_traj = tmp[dropout_col].values
-                elif len(dropout_next_traj) < self.max_T:
-                        dropout_next_traj[-1] = 1
+                elif len(reward_traj) < self.max_T:
+                    dropout_next_traj = np.zeros_like(reward_traj)
+                    dropout_next_traj[-1] = 1
             else:
                 dropout_prob_traj = tmp['custom_dropout_prob'].values
                 if dropout_prob_traj[-1] is None:
@@ -685,8 +686,9 @@ class OfflineQLearn(object):
                 dropout_prob_traj = dropout_prob_traj[:T]
 
             self.total_N += T
-            if T < self.max_T:
-                incomplete_cnt += sum(dropout_next_traj) # 1
+            # if T < self.max_T:
+            #     incomplete_cnt += 1
+            incomplete_cnt += sum(dropout_next_traj)
 
             if T > burn_in:
                 self.masked_buffer[(i)] = [
@@ -1119,8 +1121,7 @@ class OfflineQLearn(object):
         if subsample_index is not None:
             keys = subsample_index
         for i in keys:
-            S_traj, A_traj, R_traj, _, _, do_traj, dop_traj = self.masked_buffer[
-                i][:7]
+            S_traj, A_traj, R_traj, _, _, do_traj, dop_traj = self.masked_buffer[i][:7]
             if self.misc_buffer:
                 mnar_nextobs_traj = self.misc_buffer[i].get(
                     'mnar_nextobs_arr', None)
@@ -1130,7 +1131,8 @@ class OfflineQLearn(object):
                     'mnar_instrument_arr', None)
             else:
                 mnar_nextobs_traj = None
-                mnar_noninstrument_traj, mnar_instrument_traj = None, None
+                mnar_noninstrument_traj = None
+                mnar_instrument_traj = None
             if missing_mechanism == 'mar':
                 T = A_traj.shape[0]
                 obs_list.append(S_traj[self.dropout_obs_count_thres:T])
@@ -1334,10 +1336,10 @@ class OfflineQLearn(object):
                             compress=3)
         else:
             if include_reward:
+                print('use the reward as outcome')
                 # use reward as outcome
                 y_arr = rewards
                 y_dim = 1
-                print('use the reward as outcome')
             elif mnar_nextobs_arr is None:
                 if mnar_y_transform is not None:
                     orig_next_obs = self.fitted_dropout_model[
