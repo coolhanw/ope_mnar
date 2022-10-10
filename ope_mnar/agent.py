@@ -634,6 +634,8 @@ class OfflineQLearn(object):
         incomplete_cnt = 0
         self.total_N = 0
         self._initial_obs = []
+        if 'custom_dropout_prob' not in data.columns and dropout_col in data.columns:
+            print(f'use column {dropout_col} as dropout indicator')
         for i, id_ in enumerate(id_list):
             tmp = data.loc[data[id_col] == id_]
             S_traj = tmp[state_cols].values
@@ -654,11 +656,12 @@ class OfflineQLearn(object):
                     survival_prob_traj = None
                     dropout_prob_traj = None
                 if dropout_col in tmp.columns:
-                    print(f'use column {dropout_col} as dropout indicator')
                     dropout_next_traj = tmp[dropout_col].values
                 elif len(reward_traj) < self.max_T:
                     dropout_next_traj = np.zeros_like(reward_traj)
                     dropout_next_traj[-1] = 1
+                else:
+                    dropout_next_traj = np.zeros_like(reward_traj)
             else:
                 dropout_prob_traj = tmp['custom_dropout_prob'].values
                 if dropout_prob_traj[-1] is None:
@@ -692,11 +695,13 @@ class OfflineQLearn(object):
 
             if T > burn_in:
                 self.masked_buffer[(i)] = [
-                    S_traj[burn_in:], A_traj[burn_in:], reward_traj[burn_in:],
-                    T, survival_prob_traj[burn_in:]
-                    if survival_prob_traj is not None else None,
-                    dropout_next_traj[burn_in:], dropout_prob_traj[burn_in:]
-                    if dropout_prob_traj is not None else None
+                    S_traj[burn_in:], 
+                    A_traj[burn_in:], 
+                    reward_traj[burn_in:],
+                    T, 
+                    survival_prob_traj[burn_in:] if survival_prob_traj is not None else None,
+                    dropout_next_traj[burn_in:], 
+                    dropout_prob_traj[burn_in:] if dropout_prob_traj is not None else None
                 ]
             if mnar_nextobs_var is not None or mnar_noninstrument_var is not None is not None or mnar_instrument_var is not None:
                 self.misc_buffer[(i)] = {}
@@ -1108,7 +1113,7 @@ class OfflineQLearn(object):
         self._scale_obs = scale_obs
         obs_list, next_obs_list, action_list, reward_list = [], [], [], []
         dropout_next_list, dropout_prob_list = [], []
-        done_list = []
+        # done_list = []
         mnar_nextobs_list, mnar_noninstrument_list, mnar_instrument_list = [], [], []
         self.fitted_dropout_model = {}
         if export_dir is not None and pkl_filename is not None:
@@ -1121,7 +1126,7 @@ class OfflineQLearn(object):
         if subsample_index is not None:
             keys = subsample_index
         for i in keys:
-            S_traj, A_traj, R_traj, _, _, do_traj, dop_traj = self.masked_buffer[i][:7]
+            S_traj, A_traj, R_traj, _, _, don_traj, dop_traj = self.masked_buffer[i][:7]
             if self.misc_buffer:
                 mnar_nextobs_traj = self.misc_buffer[i].get(
                     'mnar_nextobs_arr', None)
@@ -1142,6 +1147,11 @@ class OfflineQLearn(object):
                                   -1, 1))  # R_{t-1}
             elif missing_mechanism == 'mnar':
                 T = A_traj.shape[0]
+                
+                if sum(don_traj) == 0: # no dropout
+                    T -= 1
+                    if T <= self.dropout_obs_count_thres:
+                        continue
 
                 obs_list.append(S_traj[self.dropout_obs_count_thres:T])
                 if mnar_nextobs_traj is not None:
@@ -1161,8 +1171,7 @@ class OfflineQLearn(object):
                             [[np.nan] * self.state_dim]
                         ]))
                 else:
-                    next_obs_list.append(S_traj[self.dropout_obs_count_thres +
-                                                1:])
+                    next_obs_list.append(S_traj[self.dropout_obs_count_thres+1:T+1])
                 reward_list.append(
                     R_traj[self.dropout_obs_count_thres:T].reshape(-1,
                                                                    1))  # R_{t}
@@ -1170,21 +1179,21 @@ class OfflineQLearn(object):
             action_list.append(A_traj[self.dropout_obs_count_thres:T].reshape(
                 -1, 1))
             dropout_next_list.append(
-                do_traj[self.dropout_obs_count_thres:T].reshape(-1, 1))
+                don_traj[self.dropout_obs_count_thres:T].reshape(-1, 1))
             if dop_traj is not None:
                 dropout_prob_list.append(
                     dop_traj[self.dropout_obs_count_thres:T].reshape(-1, 1))
 
-            dones = np.zeros(shape=T - self.dropout_obs_count_thres)
-            if T == self.max_T:
-                dones[-1] = 1
-            done_list.append(dones.reshape(-1, 1))
+            # dones = np.zeros(shape=T - self.dropout_obs_count_thres)
+            # if T == self.max_T:
+            #     dones[-1] = 1
+            # done_list.append(dones.reshape(-1, 1))
         unscaled_obs = obs = np.vstack(obs_list)  # (total_T, S_dim)
         if next_obs_list:
             next_obs = np.vstack(next_obs_list)  # (total_T, S_dim)
         else:
             next_obs = None
-        # we do not scale these arrays
+        # we scale these arrays separately
         mnar_nextobs_arr = np.vstack(
             mnar_nextobs_list) if mnar_nextobs_list else None
         mnar_noninstrument_arr = np.vstack(
@@ -1210,7 +1219,7 @@ class OfflineQLearn(object):
         actions = np.vstack(action_list).squeeze()  # (total_T, )
         rewards = np.vstack(reward_list).squeeze()  # (total_T, )
         dropout_next = np.vstack(dropout_next_list).squeeze()  # (total_T, )
-        dones = np.vstack(done_list).squeeze()  # (total_T, )
+        # dones = np.vstack(done_list).squeeze()  # (total_T, )
         if dropout_prob_list:
             dropout_prob = np.vstack(
                 dropout_prob_list).squeeze()  # (total_T, )
@@ -1441,7 +1450,10 @@ class OfflineQLearn(object):
                 logitT_arr = np.log(1 / probT_arr - 1)
             else:
                 probT_arr, logitT_arr = None, None
-            delta_arr = 1 - np.logical_or(dropout_next, dones) # indicator of observed sample
+            # delta_arr = 1 - np.logical_or(dropout_next, dones) # indicator of observed sample
+            # done=True does not necessarily indicate dropout
+            delta_arr = 1 - dropout_next
+            print('count of dropout indicator:', sum(delta_arr == 0))
 
             if verbose:
                 print(f'observed proportion: {np.mean(delta_arr)}')
@@ -1637,7 +1649,7 @@ class OfflineQLearn(object):
         dropout_prob_concat = []
         surv_prob_concat = []
         for i in keys:
-            S_traj, A_traj, R_traj, _, surv_prob_traj, do_traj, dop_traj = self.masked_buffer[
+            S_traj, A_traj, R_traj, _, surv_prob_traj, don_traj, dop_traj = self.masked_buffer[
                 i][:7]
             if self.misc_buffer:
                 mnar_nextobs_arr = self.misc_buffer[i].get(
@@ -1670,7 +1682,7 @@ class OfflineQLearn(object):
                     X_mat = obs
                 # don't forget to cast dtype as float
                 dropout_prob_pred = np.zeros_like(
-                    do_traj[self.dropout_obs_count_thres:traj_len],
+                    don_traj[self.dropout_obs_count_thres:traj_len],
                     dtype=float)
                 for a in range(self.num_actions):
                     if any(actions == a) == False:
@@ -1771,6 +1783,7 @@ class OfflineQLearn(object):
 
             dropout_prob_pred = np.append(np.array([0] * self.dropout_obs_count_thres),
                                  dropout_prob_pred)
+
             surv_prob_pred = (1 - dropout_prob_pred).cumprod()
             self.propensity_pred[i] = [dropout_prob_pred, surv_prob_pred]
             dropout_prob_concat.append(dropout_prob_pred)
@@ -2336,6 +2349,7 @@ class OfflineQLearn(object):
             S_traj = training_buffer[i][0]
             A_traj = training_buffer[i][1]
             reward_traj = training_buffer[i][2]
+            dropout_next_traj = training_buffer[i][5]
             dop_traj = training_buffer[i][6]
             if len(S_traj) < 2:
                 continue
