@@ -740,30 +740,28 @@ def eval_V_int_CI_multi(
             i += 1
         del agent
         _ = gc.collect()
-    with open(filename_CI, 'ab') as outfile_CI:
-        pickle.dump(intervals, outfile_CI)
+        with open(filename_CI, 'wb') as outfile_CI:
+            pickle.dump(intervals, outfile_CI)
+        output_dict = {
+                'initial_states': eval_S_inits_sample,
+                'initial_states_kwargs': eval_S_inits_sample_kwargs,
+                'est_V_int_list': est_V_int_list,
+                'est_V_int_std_list': est_V_int_std_list,
+                'true_V_int': est_mean,
+                'est_V_mse_list': est_V_mse_list,
+                'max_inverse_wt_list': max_inverse_wt_list,
+                'mnar_gamma_est_list': mnar_gamma_est_list if ipw and estimate_missing_prob and missing_mechanism.lower() == 'mnar' else None,
+                'dropout_prob_mse_list': dropout_prob_mse_list if ipw else None,
+                'beta_list': beta_list,
+                'Sigma_hat_list': Sigma_hat_list,
+                'inv_Sigma_hat_list': inv_Sigma_hat_list,
+                'vector_list': vector_list
+            }
+        with open(est_value_filename, "wb") as f:
+            pickle.dump(output_dict, f)
     for k in eval_S_inits_dict.keys():
         for sig_level in alpha_list:
             print(f'initial scenario {k}, alpha {sig_level}, coverage prob: {count[k][sig_level] / len(lengths[k][sig_level])}')
-    output_dict = {
-            'initial_states': eval_S_inits_sample,
-            'initial_states_kwargs': eval_S_inits_sample_kwargs,
-            'est_V_int_list': est_V_int_list,
-            'est_V_int_std_list': est_V_int_std_list,
-            'true_V_int': est_mean,
-            'est_V_mse_list': est_V_mse_list,
-            'max_inverse_wt_list': max_inverse_wt_list,
-            'mnar_gamma_est_list': mnar_gamma_est_list if ipw and estimate_missing_prob and missing_mechanism.lower() == 'mnar' else None,
-            'dropout_prob_mse_list': dropout_prob_mse_list if ipw else None,
-            'beta_list': beta_list,
-            'Sigma_hat_list': Sigma_hat_list,
-            'inv_Sigma_hat_list': inv_Sigma_hat_list,
-            'vector_list': vector_list
-        }
-    with open(est_value_filename, "wb") as f:
-        pickle.dump(output_dict, f)
-    for k in eval_S_inits_dict.keys():
-        for sig_level in alpha_list:
             result_filename_suffix = result_filename.rstrip('.txt') + f'_init_{k}_alpha{sig_level}.txt'
             with open(result_filename_suffix, "a+") as f:
                 f.write("Count %d in %d, ratio %f \n" %
@@ -1108,33 +1106,31 @@ def eval_V_int_CI_bootstrap_multi(
         i += 1
         del agent
         _ = gc.collect()
-    with open(filename_CI, 'ab') as outfile_CI:
-        pickle.dump(intervals, outfile_CI)
-    with open(filename_bootstrap_CI, 'ab') as outfile_CI:
-        pickle.dump(bootstrap_intervals, outfile_CI)
+        with open(filename_CI, 'wb') as outfile_CI:
+            pickle.dump(intervals, outfile_CI)
+        with open(filename_bootstrap_CI, 'wb') as outfile_CI:
+            pickle.dump(bootstrap_intervals, outfile_CI)
+        output_dict = {
+                'initial_states': eval_S_inits_sample,
+                'initial_states_kwargs': eval_S_inits_sample_kwargs,
+                'est_V_int_list': est_V_int_list,
+                'est_V_int_std_list': est_V_int_std_list,
+                'bootstrap_V_int_std_list': bootstrap_V_int_std_list,
+                'true_V_int': est_mean,
+                'est_V_mse_list': est_V_mse_list,
+                'max_inverse_wt_list': max_inverse_wt_list,
+                'mnar_gamma_est_list': mnar_gamma_est_list if ipw and estimate_missing_prob and missing_mechanism.lower() == 'mnar' else None,
+                'dropout_prob_mse_list': dropout_prob_mse_list if ipw else None,
+                'beta_list': beta_list,
+                'Sigma_hat_list': Sigma_hat_list,
+                'inv_Sigma_hat_list': inv_Sigma_hat_list,
+                'vector_list': vector_list
+            }
+        with open(est_value_filename, "wb") as f:
+            pickle.dump(output_dict, f)
     for k in eval_S_inits_dict.keys():
         for sig_level in alpha_list:
-            print(f'initial scenario {k}, alpha {sig_level}, coverage prob: {count[k][sig_level] / len(lengths[k][sig_level])}')# print(count / mc_size)
-    output_dict = {
-            'initial_states': eval_S_inits_sample,
-            'initial_states_kwargs': eval_S_inits_sample_kwargs,
-            'est_V_int_list': est_V_int_list,
-            'est_V_int_std_list': est_V_int_std_list,
-            'bootstrap_V_int_std_list': bootstrap_V_int_std_list,
-            'true_V_int': est_mean,
-            'est_V_mse_list': est_V_mse_list,
-            'max_inverse_wt_list': max_inverse_wt_list,
-            'mnar_gamma_est_list': mnar_gamma_est_list if ipw and estimate_missing_prob and missing_mechanism.lower() == 'mnar' else None,
-            'dropout_prob_mse_list': dropout_prob_mse_list if ipw else None,
-            'beta_list': beta_list,
-            'Sigma_hat_list': Sigma_hat_list,
-            'inv_Sigma_hat_list': inv_Sigma_hat_list,
-            'vector_list': vector_list
-        }
-    with open(est_value_filename, "wb") as f:
-        pickle.dump(output_dict, f)
-    for k in eval_S_inits_dict.keys():
-        for sig_level in alpha_list:
+            print(f'initial scenario {k}, alpha {sig_level}, coverage prob: {count[k][sig_level] / len(lengths[k][sig_level])}') # print(count / mc_size)
             result_filename_suffix = result_filename.rstrip('.txt') + f'_init_{k}_alpha{sig_level}.txt'
             with open(result_filename_suffix, "a+") as f:
                 f.write("Count %d in %d, ratio %f \n" %
