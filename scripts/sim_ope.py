@@ -17,13 +17,13 @@ from collections import defaultdict, Counter
 
 try:
     from ope_mnar.utils import SimEnv, VectorSimEnv
-    from ope_mnar.main import train_Q_func, main_get_target_value_multi
+    from ope_mnar.main import train_Q_func, get_target_value_multi
 except:
     import sys
     sys.path.append(os.path.expanduser('~/Projects/ope_mnar/ope_mnar'))
     sys.path.append(os.path.expanduser('~/Projects/ope_mnar'))
     from ope_mnar.utils import SimEnv, VectorSimEnv
-    from ope_mnar.main import train_Q_func, main_get_target_value_multi
+    from ope_mnar.main import train_Q_func, get_target_value_multi
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--env', type=str, default='linear') # 'linear', 'SAVE'
@@ -747,7 +747,7 @@ if __name__ == '__main__':
         print('Evaluate target policy...')
         start = time.time()
         if converge:
-            value_dict = main_get_target_value_multi(
+            value_dict = get_target_value_multi(
                 T=T,
                 n=n,
                 env=None, 

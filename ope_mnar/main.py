@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import time
 
-from agent import OfflineQLearn
+from direct_method import OfflineQLearn
 from utils import SimEnv, VectorSimEnv
 
 
@@ -286,7 +286,7 @@ def train_Q_func(
     _ = gc.collect()
     return error < 0.5 # converged or not
 
-def main_get_target_value_multi(T=25,
+def get_target_value_multi(T=25,
                           n=500,
                           env=None,
                           eval_T=250,

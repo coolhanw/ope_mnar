@@ -26,7 +26,7 @@ try:
     from batch_rl.rem import MulitNetworkQNetwork, REM, random_stochastic_matrix
     from batch_rl.utils import ReplayBuffer, ReplayBufferPER  
     from ope_mnar.utils import MinMaxScaler, VectorSepsisEnv
-    from ope_mnar.agent import OfflineQLearn  
+    from ope_mnar.direct_method import OfflineQLearn  
 except:
     sys.path.append(os.path.expanduser('~/Projects/ope_mnar'))
     sys.path.append(os.path.expanduser('~/Projects/ope_mnar/ope_mnar'))
@@ -36,7 +36,7 @@ except:
     from batch_rl.rem import MulitNetworkQNetwork, REM, random_stochastic_matrix
     from batch_rl.utils import ReplayBuffer, ReplayBufferPER  
     from ope_mnar.utils import MinMaxScaler, VectorSepsisEnv
-    from ope_mnar.agent import OfflineQLearn      
+    from ope_mnar.direct_method import OfflineQLearn      
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--discount', type=float, default=0.8)
