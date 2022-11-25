@@ -61,7 +61,6 @@ class CategoricalMLPPolicy(nn.Module):
         log_pis = dists.log_prob(value=action).sum(dim=-1)
         return log_pis # (batch_size,)
 
-
 class TanhMLPPolicy(nn.Module):
     def __init__(self,
                  state_dim,
@@ -83,7 +82,6 @@ class TanhMLPPolicy(nn.Module):
         if not preval:
             return x
         return x, pre_tanh_val
-
 
 class TanhGaussianMLPPolicy(nn.Module):
     """A probabilistic actor which does regular stochastic mapping of actions from states"""

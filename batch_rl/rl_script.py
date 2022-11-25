@@ -33,10 +33,10 @@ except:
 parser = argparse.ArgumentParser()
 parser.add_argument('--discount', type=float, default=0.8)
 parser.add_argument('--RL_agent', type=str, default='dqn') # 'dqn', 'bcq', 'rem', 'dueling-dqn'
-parser.add_argument('--prioritized_replay', type=lambda x: (str(x).lower() == 'true'), default=False)   
-parser.add_argument('--max_iters', type=int, default=int(2e5))
-parser.add_argument('--minibatch_size', type=int, default=256)
-parser.add_argument('--lr', type=float, default=1e-3)
+parser.add_argument('--prioritized_replay', type=lambda x: (str(x).lower() == 'true'), default=True)   
+parser.add_argument('--max_iters', type=int, default=int(2e5)) # int(2e5)
+parser.add_argument('--minibatch_size', type=int, default=256) # 256
+parser.add_argument('--lr', type=float, default=1e-3) # 1e-3
 args = parser.parse_args()
 
 if __name__ == '__main__':
@@ -51,12 +51,15 @@ if __name__ == '__main__':
     export_dir = os.path.expanduser('~/Projects/ope_mnar/output/sepsis/batch_rl')
     pathlib.Path(export_dir).mkdir(parents=True, exist_ok=True)
     
-    shift_bloc = True
-    exclude_icu_morta = True
+    shift_bloc = False # True
+    exclude_icu_morta = False # True
     use_complete_trajs = False
-    shift_bloc_str = '_shiftbloc' if shift_bloc else ''
-    exclude_icu_morta_str = '_exclude_icu_morta' if exclude_icu_morta else ''
+    # shift_bloc_str = '_shiftbloc' if shift_bloc else ''
+    # exclude_icu_morta_str = '_exclude_icu_morta' if exclude_icu_morta else ''
     full_trajs_str = '_full_trajs' if use_complete_trajs else ''
+    filename_suffix = '' # '', '_realigned_lvcf', '_realigned'
+    filename_suffix += '_exclude_icu_morta' if exclude_icu_morta else ''
+    filename_suffix += '_shiftbloc' if shift_bloc else ''
 
     ########################################################################
     ##                    Specify state features
@@ -66,10 +69,11 @@ if __name__ == '__main__':
         features_cols = f.read().split()
 
     ## selected features
+    # features_cols.remove('re_admission') # 're_admission' are all 0's
     features_cols = ['Arterial_pH','SpO2','Temp_C','Chloride','Hb','INR','age','PT','HR','Arterial_BE','Ionised_Ca','Calcium','Arterial_lactate'] + ['SOFA'] # 14 features
     static_features = [f for f in features_cols if f in set(['gender', 'age', 'Weight_kg', 're_admission'])]
     dynamic_features = [f for f in features_cols if f not in static_features]
-    features_cols = static_features + dynamic_features
+    features_cols = static_features + dynamic_features # should keep this order in all downstream analysis
     state_dim = len(features_cols)
 
     ########################################################################
@@ -83,32 +87,37 @@ if __name__ == '__main__':
     ########################################################################
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     if subsample_size is None:
-        data_path = os.path.join(data_dir, f'sepsis_processed{full_trajs_str}_state_action{num_actions}_reward{exclude_icu_morta_str}{shift_bloc_str}_split1.csv')
+        # data_path = os.path.join(data_dir, f'sepsis_processed{full_trajs_str}_state_action{num_actions}_reward{exclude_icu_morta_str}{shift_bloc_str}_split1.csv')
+        data_path = os.path.join(data_dir, f'sepsis_processed{full_trajs_str}_state_action{num_actions}_reward{filename_suffix}_split1.csv')
     else:
-        data_path = os.path.join(data_dir, f'sepsis_processed{full_trajs_str}_state_action{num_actions}_reward{exclude_icu_morta_str}{shift_bloc_str}_split1_sample{subsample_size}.csv')
+        # data_path = os.path.join(data_dir, f'sepsis_processed{full_trajs_str}_state_action{num_actions}_reward{exclude_icu_morta_str}{shift_bloc_str}_split1_sample{subsample_size}.csv')
+        data_path = os.path.join(data_dir, f'sepsis_processed{full_trajs_str}_state_action{num_actions}_reward{filename_suffix}_split1_sample{subsample_size}.csv')
     data = pd.read_csv(data_path)
 
     ## scale features
-    scaler_path = os.path.join(data_dir, f'feature{state_dim}_scaler.pkl')
+    scaler_path = os.path.join(data_dir, f'feature{state_dim}_scaler{filename_suffix}.pkl')
     if os.path.exists(scaler_path):
         with open(scaler_path,'rb') as f:
             scaler = pickle.load(f)
     else:
-        full_data = pd.read_csv(os.path.join(data_dir, f'sepsis_processed_state_action{num_actions}_reward{exclude_icu_morta_str}{shift_bloc_str}.csv'))
+        # full_data = pd.read_csv(os.path.join(data_dir, f'sepsis_processed_state_action{num_actions}_reward{exclude_icu_morta_str}{shift_bloc_str}.csv'))
+        full_data = pd.read_csv(os.path.join(data_dir, f'sepsis_processed_state_action{num_actions}_reward{filename_suffix}.csv'))
         scaler = MinMaxScaler()
         scaler.fit(full_data[features_cols])
         with open(scaler_path,'wb') as f:
             pickle.dump(scaler, f)
 
     print(pd.DataFrame({'Variable': features_cols, 'Min': scaler.data_min_, 'Max': scaler.data_max_}))
-    data[features_cols] = scaler.transform(data[features_cols]) 
+    data[features_cols] = scaler.transform(data[features_cols])
+    print(data[features_cols].head())
+    assert not data[features_cols].isna().any().any(), 'There is missing data in the table.'
     
     ########################################################################
     ##                    Specify rewards
     ########################################################################
-    custom_reward_name = 'raghu'
+    # custom_reward_name = 'raghu'
     
-    ## custom reward function
+    # 2) custom reward function
     custom_reward_name = 'raghu_v1'
     c0 = -0.5
     c1 = -0.25
@@ -125,6 +134,16 @@ if __name__ == '__main__':
         reward_full = np.append(reward, 0)
         rows['reward_' + custom_reward_name] = reward_full
         return rows
+
+    # # 3) use negative SOFA score as reward
+    # custom_reward_name = 'neg_sofa'
+
+    # def custom_reward(rows):
+    #     next_sofa = rows['SOFA'].iloc[1:].values
+    #     reward = 0.1 * (23 - next_sofa)
+    #     reward_full = np.append(reward, 0)
+    #     rows['reward_'+custom_reward_name] = reward_full
+    #     return rows
 
     data = data.groupby('icustayid').apply(custom_reward)
 
@@ -156,7 +175,7 @@ if __name__ == '__main__':
             actions = tmp[action_col].iloc[:-1].values.reshape(-1,1)
             rewards = tmp[reward_col].iloc[:-1].values.reshape(-1,1)
             dones = np.zeros(shape=rewards.shape)
-        if traj_len == T:
+        else:
             states = tmp[features_cols].values
             next_states = np.vstack([tmp[features_cols].iloc[1:].values, np.zeros(shape=(1, state_dim))]) # use 0's to pad the last observation
             actions = tmp[action_col].values.reshape(-1,1)

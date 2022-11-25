@@ -310,10 +310,10 @@ class ExpoTiltingClassifierMNAR():
                     print(f'estEq(gamma_init): {estEq_sq(gamma_init)}')
                     print(f'estEq({gamma_hat.x}): {estEq_sq(gamma_hat.x)}')
             gamma_hat = gamma_hat_list[np.argmin(estEq_sq_list)]
-            expg_hat = self.expg_func(u=u, gamma=-0.5, bandwidth=bandwidth)
-            gamma_y = np.clip(np.dot(y, (-0.5, )), -709.78, 709.78)  # (k,)
-            pi_hat = 1 / (1 + expg_hat * np.exp(gamma_y))
-            logit = np.log(expg_hat) + gamma_y
+            # expg_hat = self.expg_func(u=u, gamma=-0.5, bandwidth=bandwidth)
+            # gamma_y = np.clip(np.dot(y, (-0.5, )), -709.78, 709.78)  # (k,)
+            # pi_hat = 1 / (1 + expg_hat * np.exp(gamma_y))
+            # logit = np.log(expg_hat) + gamma_y
             expg_hat = self.expg_func(u=u,
                                       gamma=gamma_hat,
                                       bandwidth=bandwidth)
@@ -359,7 +359,7 @@ class ExpoTiltingClassifierMNAR():
 
             def step1_func(gamma):
                 M_mean = np.mean(self.estEq_full(gamma), axis=0)
-                _ = gc.collect()
+                # _ = gc.collect()
                 return np.matmul(M_mean.T, M_mean)
 
             gamma_hat_list = []
@@ -374,10 +374,12 @@ class ExpoTiltingClassifierMNAR():
                                           reps=(reps, 1))
             for i in range(reps):
                 gamma_init = gamma_init_list[i].reshape((y_dim, ))
-                optresult1 = minimize(fun=step1_func,
-                                      x0=gamma_init,
-                                      method='L-BFGS-B',
-                                      bounds=bounds)
+                optresult1 = minimize(
+                    fun=step1_func,
+                    x0=gamma_init,
+                    bounds=bounds,
+                    method='Nelder-Mead' # 'L-BFGS-B'
+                )
                 gamma_hat_step1 = optresult1.x
                 gamma_hat_list.append(gamma_hat_step1)
                 estEq_sq_list.append(step1_func(gamma_hat_step1))
@@ -414,10 +416,10 @@ class ExpoTiltingClassifierMNAR():
                 print(
                     f'step2, estEq({gamma_hat_step2}): {step2_func(gamma_hat_step2)}'
                 )
-            expg_hat = self.expg_func(u=u, gamma=-0.5, bandwidth=bandwidth)
-            gamma_y = np.clip(np.dot(y, (-0.5, )), -709.78, 709.78)  # (k,)
-            logit = np.log(expg_hat) + gamma_y
-            pi_hat = 1 / (1 + expg_hat * np.exp(gamma_y))
+            # expg_hat = self.expg_func(u=u, gamma=-0.5, bandwidth=bandwidth)
+            # gamma_y = np.clip(np.dot(y, (-0.5, )), -709.78, 709.78)  # (k,)
+            # logit = np.log(expg_hat) + gamma_y
+            # pi_hat = 1 / (1 + expg_hat * np.exp(gamma_y))
             expg_hat = self.expg_func(u=u,
                                       gamma=gamma_hat_step2,
                                       bandwidth=bandwidth)
@@ -536,7 +538,7 @@ class ExpoTiltingClassifierMNAR():
                         z == i] = np.square(bandwidth_factor) * np.cov(
                             u[z == i], rowvar=False) * np.square(
                                 np.sum(z == i)**(-1 / 3))
-            print(self.bandwidth_dict)
+            # print(self.bandwidth_dict)
         self.gamma_hat = self.estimate_gamma(L=L,
                                              z=z,
                                              u=u,

@@ -647,7 +647,7 @@ class OfflineQLearn(object):
             T = len(A_traj)
             if 'custom_dropout_prob' not in tmp.columns:
                 if 'surv_prob' in tmp.columns:
-                    survival_prob_traj = tmp['surv_prob'].values
+                    survival_prob_traj = tmp['surv_prob'].values.astype(float)
                     dropout_prob_traj = 1 - survival_prob_traj[
                         1:] / survival_prob_traj[:-1]
                     dropout_prob_traj = np.append(np.array([0]),
@@ -663,23 +663,32 @@ class OfflineQLearn(object):
                 else:
                     dropout_next_traj = np.zeros_like(reward_traj)
             else:
-                dropout_prob_traj = tmp['custom_dropout_prob'].values
+                dropout_prob_traj = tmp['custom_dropout_prob'].values.astype(float)
                 if dropout_prob_traj[-1] is None:
                     dropout_prob_traj[-1] = -1
                 survival_prob_traj = np.append(
                     1, (1 - dropout_prob_traj).cumprod())[:-1]
-                dropout_index = np.where(
-                    np.random.uniform(
-                        low=0, high=1, size=dropout_prob_traj.shape) <
-                    dropout_prob_traj)[0]
-                dropout_next_traj = np.zeros_like(reward_traj)
+
+                # dropout_index = np.where(
+                #     np.random.uniform(
+                #         low=0, high=1, size=dropout_prob_traj.shape) <
+                #     dropout_prob_traj)[0]
+                # dropout_next_traj = np.zeros_like(reward_traj)
+                # if len(dropout_index) > 0:
+                #     dropout_index = dropout_index.min()
+                #     dropout_next_traj[dropout_index] = 1
+                # else:
+                #     dropout_index = self.max_T
+                # if dropout_prob_traj[-1] < 0:
+                #     dropout_prob_traj[-1] = np.nan
+
+                assert dropout_col in tmp.columns
+                dropout_next_traj = tmp[dropout_col].values
+                dropout_index = np.where(dropout_next_traj == 1)[0]
                 if len(dropout_index) > 0:
                     dropout_index = dropout_index.min()
-                    dropout_next_traj[dropout_index] = 1
                 else:
                     dropout_index = self.max_T
-                if dropout_prob_traj[-1] < 0:
-                    dropout_prob_traj[-1] = np.nan
                 T = min(dropout_index + 1, self.max_T)
                 S_traj = S_traj[:T]
                 A_traj = A_traj[:T]
@@ -698,7 +707,7 @@ class OfflineQLearn(object):
                     S_traj[burn_in:], 
                     A_traj[burn_in:], 
                     reward_traj[burn_in:],
-                    T, 
+                    T,
                     survival_prob_traj[burn_in:] if survival_prob_traj is not None else None,
                     dropout_next_traj[burn_in:], 
                     dropout_prob_traj[burn_in:] if dropout_prob_traj is not None else None
@@ -2064,7 +2073,7 @@ class OfflineQLearn(object):
                 Q_est += np.matmul(output, self.para_2[a]) * (a == A)
         else:
             for a in range(self.num_actions):
-                Q_est += np.matmul(output, self.para[a]) * (a == A)
+                Q_est = Q_est + np.matmul(output, self.para[a]) * (a == A)
         return Q_est if not scaler_output else Q_est.item()
 
     def V(self, S, policy):
@@ -2318,6 +2327,10 @@ class OfflineQLearn(object):
         Returns:
             est_beta (np.ndarray): array of beta_hat, dimension (para_dim*num_actions,1)
         """
+        if hasattr(self, 'est_beta'):
+            return self.est_beta.copy()
+        if not ipw:
+            estimate_missing_prob = False
         if estimate_missing_prob:
             assert hasattr(
                 self, 'propensity_pred'
@@ -2325,8 +2338,7 @@ class OfflineQLearn(object):
         mat1 = np.zeros((self.para_dim * self.num_actions,
                          self.para_dim * self.num_actions))
         mat2 = np.zeros((self.para_dim * self.num_actions, 1))
-        if not ipw:
-            estimate_missing_prob = False
+
         total_T = 0
         obs_list, next_obs_list = [], []
         action_list, reward_list = [], []
@@ -2334,7 +2346,7 @@ class OfflineQLearn(object):
         dropout_prob_list = []
         max_inverse_wt = 1
         min_inverse_wt = 1 / prob_lbound if prob_lbound else 0
-        timewise_inverse_wt = np.zeros(shape=self.max_T - self.burn_in - 1)
+        # timewise_inverse_wt = np.zeros(shape=self.max_T - self.burn_in - 1)
         if block:
             training_buffer = self.next_block
         else:
@@ -2384,25 +2396,24 @@ class OfflineQLearn(object):
                     inverse_wt = 1 / np.clip(
                         a=prob, a_min=prob_lbound, a_max=1)  # bound ipw
             inverse_wt_list.append(inverse_wt)
-            timewise_inverse_wt += np.append(
-                inverse_wt, [0] * (self.max_T - self.burn_in - 1 - T))
+            # timewise_inverse_wt += np.append(
+            #     inverse_wt, [0] * (self.max_T - self.burn_in - 1 - T))
         obs = np.vstack(obs_list)  # (total_T, S_dim)
         next_obs = np.vstack(next_obs_list)  # (total_T, S_dim)
         actions = np.vstack(action_list)  # (total_T, 1)
         rewards = np.vstack(reward_list)  # (total_T, 1)
         inverse_wts = np.vstack(inverse_wt_list)  # (total_T, 1)
         inverse_wts_mat = np.diag(
-            v=inverse_wts.squeeze())  # (total_T, total_T)
+            v=inverse_wts.squeeze()).astype(float)  # (total_T, total_T)
         Xi_mat = self._Xi(S=obs, A=actions)
         self._Xi_mat = Xi_mat
-        timewise_inverse_wt = timewise_inverse_wt / self.n
+        # timewise_inverse_wt = timewise_inverse_wt / self.n
         if dropout_prob_concat:
             dropout_prob_concat = np.concatenate(dropout_prob_concat)
         U_mat = self._U(S=next_obs, policy=policy)
         mat1 = reduce(np.matmul,
                       [Xi_mat.T, inverse_wts_mat, Xi_mat - self.gamma * U_mat])
         mat2 = reduce(np.matmul, [Xi_mat.T, inverse_wts_mat, rewards])
-
         max_inverse_wt = np.max(inverse_wts)
         min_inverse_wt = np.min(inverse_wts)
 
@@ -2459,6 +2470,7 @@ class OfflineQLearn(object):
         else:
             self.Sigma_hat = np.diag(
                 [ridge_factor] * mat1.shape[0]) + mat1 / self.total_T_ipw
+            self.Sigma_hat = self.Sigma_hat.astype(float)
             self.vector = mat2 / self.total_T_ipw
             self.inv_Sigma_hat = np.linalg.pinv(self.Sigma_hat)
             self.est_beta = np.matmul(self.inv_Sigma_hat, self.vector)
@@ -2512,6 +2524,8 @@ class OfflineQLearn(object):
         Returns:
             Omega (np.ndarray): array of Omega_hat, dimension (para_dim * num_actions, para_dim * num_actions)
         """
+        if not ipw:
+            estimate_missing_prob = False
         if estimate_missing_prob:
             assert hasattr(
                 self, 'propensity_pred'
@@ -2578,7 +2592,7 @@ class OfflineQLearn(object):
         surv_probs = np.vstack(surv_prob_list)  # (total_T, 1)
         inverse_wts = np.vstack(inverse_wt_list)  # (total_T, 1)
         inverse_wts_mat = np.diag(
-            v=inverse_wts.squeeze())  # (total_T, total_T)
+            v=inverse_wts.squeeze()).astype(float)  # (total_T, total_T)
         Xi = self._Xi(S=obs, A=actions)  # (n, para_dim*num_actions)
         proj_td = np.matmul(
             inverse_wts_mat *
@@ -2768,7 +2782,7 @@ class OfflineQLearn(object):
         Returns:
             V_int_sigma_sq (float): sigma_hat for integrated value
         """
-        print("start calculating Omega...")
+        # print("start calculating Omega...")
         if not hasattr(self, 'Omega') or self.Omega is None:
             self._Omega_hat(policy=policy,
                             block=block,

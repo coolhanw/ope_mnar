@@ -42,12 +42,15 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--discount', type=float, default=0.8)
 parser.add_argument('--ipw',
                     type=lambda x: (str(x).lower() == 'true'),
-                    default=True)
+                    default=False)
+parser.add_argument('--estimate_missing_prob',
+                    type=lambda x: (str(x).lower() == 'true'),
+                    default=False)
 parser.add_argument('--missing_mechanism', type=str, default='mnar')
 parser.add_argument('--run_offline_RL',
                     type=lambda x: (str(x).lower() == 'true'),
                     default=True)
-parser.add_argument('--RL_agent', type=str, default='dqn') # 'dqn','bcq','rem', 'dueling-dqn'
+parser.add_argument('--RL_agent', type=str, default='bcq') # 'dqn','bcq','rem', 'dueling-dqn'
 parser.add_argument('--prioritized_replay',
                     type=lambda x: (str(x).lower() == 'true'), default=False)
 parser.add_argument('--ope',
@@ -58,13 +61,16 @@ parser.add_argument('--eval_behavior_policy',
                     default=False)
 parser.add_argument('--exclude_icu_morta',
                     type=lambda x: (str(x).lower() == 'true'),
-                    default=True)
+                    default=False)
 parser.add_argument('--use_complete_trajs',
                     type=lambda x: (str(x).lower() == 'true'),
                     default=False)
 parser.add_argument('--apply_custom_dropout',
                     type=lambda x: (str(x).lower() == 'true'),
                     default=False)
+parser.add_argument('--casewise_downsampling',
+                    type=lambda x: (str(x).lower() == 'true'),
+                    default=True)
 args = parser.parse_args()
 
 if __name__ == '__main__':
@@ -75,7 +81,9 @@ if __name__ == '__main__':
     ipw = args.ipw
     RL_agent = args.RL_agent
     prioritized_replay = args.prioritized_replay
-    estimate_missing_prob = ipw
+    estimate_missing_prob = args.estimate_missing_prob
+    if ipw and not args.apply_custom_dropout:
+        estimate_missing_prob = True
     missing_mechanism = args.missing_mechanism  # 'mnar', 'mar'
     dropout_model_type = 'linear' if missing_mechanism == 'mar' else None  # 'linear', 'rf'
     # include_reward = False if missing_mechanism == 'mar' else True
@@ -84,6 +92,7 @@ if __name__ == '__main__':
     ope = args.ope
     print(f'discount: {discount}')
     print(f'ipw: {ipw}')
+    print(f'estimate_missing_prob: {estimate_missing_prob}')
     print(f'missing_mechanism: {missing_mechanism}')
     print(f'run_offline_RL: {run_offline_RL}')
     print(f'RL_agent: {RL_agent}')
@@ -105,19 +114,30 @@ if __name__ == '__main__':
         estimator_str = 'cc'
     elif missing_mechanism == 'mnar':
         estimator_str = 'ipwMNAR'
+        if not estimate_missing_prob:
+            estimator_str += '_propT'
     elif missing_mechanism == 'mar':
         estimator_str = 'ipwMAR'
+        if not estimate_missing_prob:
+            estimator_str += '_propT'
 
     data_dir = os.path.expanduser("~/Data/mimic-iii")
     export_dir = os.path.expanduser(f'~/Projects/ope_mnar/output/sepsis')
     pathlib.Path(os.path.join(export_dir)).mkdir(parents=True, exist_ok=True)
+    rl_suffix = '' # can be used to distinguish different versions of RL policies
 
-    shift_bloc = True
+    shift_bloc = False
     use_complete_trajs = args.use_complete_trajs
     apply_custom_dropout = args.apply_custom_dropout
     exclude_icu_morta = args.exclude_icu_morta
-    shift_bloc_str = '_shiftbloc' if shift_bloc else ''
-    exclude_icu_morta_str = '_exclude_icu_morta' if exclude_icu_morta else ''
+    casewise_downsampling = args.casewise_downsampling
+    # if use_complete_trajs and not apply_custom_dropout:
+    #     casewise_downsampling = False
+    # shift_bloc_str = '_shiftbloc' if shift_bloc else ''
+    # exclude_icu_morta_str = '_exclude_icu_morta' if exclude_icu_morta else ''
+    filename_suffix = '_realigned_lvcf' # ''
+    filename_suffix += '_exclude_icu_morta' if exclude_icu_morta else ''
+    filename_suffix += '_shiftbloc' if shift_bloc else ''
     full_trajs_str = '_full_trajs' if use_complete_trajs else ''
     if use_complete_trajs and apply_custom_dropout:
         synthetic_str = '_synthetic'
@@ -126,16 +146,16 @@ if __name__ == '__main__':
     else:
         synthetic_str = ''
     
-    bandwidth_factor = 5 # 7.5, 2.5
+    bandwidth_factor = 7.5 # 7.5, 2.5
     subsample_size = 500  # None, 250
     if subsample_size is None:
-        data_path = os.path.join(
-            data_dir, f"sepsis_processed{full_trajs_str}_state_action3_reward{exclude_icu_morta_str}{shift_bloc_str}_split2.csv")
+        # data_path = os.path.join(data_dir, f"sepsis_pçrocessed{full_trajs_str}_state_action3_reward{exclude_icu_morta_str}{shift_bloc_str}_split2.csv")
+        data_path = os.path.join(data_dir, f"sepsis_processed{full_trajs_str}_state_action3_reward{filename_suffix}_split2.csv")
     else:
-        data_path = os.path.join(
-            data_dir, f"sepsis_processed{full_trajs_str}_state_action3_reward{exclude_icu_morta_str}{shift_bloc_str}_split2_sample{subsample_size}.csv")
-    holdout_data_path = os.path.join(
-        data_dir, f"sepsis_processed{full_trajs_str}_state_action3_reward{exclude_icu_morta_str}{shift_bloc_str}_split1.csv")
+        # data_path = os.path.join(data_dir, f"sepsis_processed{full_trajs_str}_state_action3_reward{exclude_icu_morta_str}{shift_bloc_str}_split2_sample{subsample_size}.csv")
+        data_path = os.path.join(data_dir, f"sepsis_processed{full_trajs_str}_state_action3_reward{filename_suffix}_split2_sample{subsample_size}.csv")
+    # holdout_data_path = os.path.join(data_dir, f"sepsis_processed{full_trajs_str}_state_action3_reward{exclude_icu_morta_str}{shift_bloc_str}_split1.csv")
+    holdout_data_path = os.path.join(data_dir, f"sepsis_processed{full_trajs_str}_state_action3_reward{filename_suffix}_split1.csv")
     traj_df = pd.read_csv(data_path)
     traj_df['mechvent'] = traj_df['mechvent'].astype('int')
     holdout_df = pd.read_csv(holdout_data_path)
@@ -178,20 +198,30 @@ if __name__ == '__main__':
     # traj_df = traj_df.groupby('icustayid').apply(custom_reward)
     # holdout_df = holdout_df.groupby('icustayid').apply(custom_reward)
 
-    # 2) use the reward defined in Raghu, A. (2017) with different weight
-    custom_reward_name = 'raghu_v1'
-    c0 = -0.5
-    c1 = -0.25
-    c2 = -1
-    c3 = 1
+    # # 2) use the reward defined in Raghu, A. (2017) with different weight
+    # custom_reward_name = 'raghu_v1'
+    # c0 = -0.5
+    # c1 = -0.25
+    # c2 = -1
+    # c3 = 1
+
+    # def custom_reward(rows):
+    #     next_sofa = rows['SOFA'].iloc[1:].values
+    #     curr_sofa = rows['SOFA'].iloc[:-1].values
+    #     next_lactate = rows['Arterial_lactate'].iloc[1:].values
+    #     curr_lactate = rows['Arterial_lactate'].iloc[:-1].values
+    #     reward = ((next_sofa == curr_sofa) & (next_sofa > 0)) * c0 + (next_sofa - curr_sofa) * c1 \
+    #         + np.tanh(next_lactate - curr_lactate) * c2 + c3
+    #     reward_full = np.append(reward, 0)
+    #     rows['reward_'+custom_reward_name] = reward_full
+    #     return rows
+
+    # 3) use negative SOFA score as reward
+    custom_reward_name = 'neg_sofa'
 
     def custom_reward(rows):
         next_sofa = rows['SOFA'].iloc[1:].values
-        curr_sofa = rows['SOFA'].iloc[:-1].values
-        next_lactate = rows['Arterial_lactate'].iloc[1:].values
-        curr_lactate = rows['Arterial_lactate'].iloc[:-1].values
-        reward = ((next_sofa == curr_sofa) & (next_sofa > 0)) * c0 + (next_sofa - curr_sofa) * c1 \
-            + np.tanh(next_lactate - curr_lactate) * c2 + c3
+        reward = 0.1 * (23 - next_sofa)
         reward_full = np.append(reward, 0)
         rows['reward_'+custom_reward_name] = reward_full
         return rows
@@ -204,8 +234,7 @@ if __name__ == '__main__':
     reward_col = 'raghu_reward' if custom_reward_name == 'raghu' else 'reward_' + \
         custom_reward_name  # 'raghu_reward', 'SOFA'
     print(f'reward_col: {reward_col}')
-    reward_transform = None if reward_col.lower(
-    ) != 'sofa' else lambda x: 0.1 * (23 - x)
+    reward_transform = None if reward_col.lower() != 'sofa' else lambda x: 0.1 * (23 - x)
     print(f'reward_transform is None: {reward_transform is None}')
 
     n_traj = traj_df[id_col].nunique()
@@ -213,7 +242,7 @@ if __name__ == '__main__':
     traj_value = traj_df.groupby(id_col).agg({reward_col: lambda x: np.sum(x * discount**np.arange(start=0,stop=len(x)))}).values
     behavior_value = np.mean(traj_value)
 
-    T = traj_df.groupby(id_col).size().max()  # 20
+    T = traj_df.groupby(id_col).size().max()  # 13
     n = traj_df[id_col].nunique()
     id_list = traj_df[id_col].unique()
 
@@ -226,30 +255,16 @@ if __name__ == '__main__':
     n_traj = traj_df['icustayid'].nunique()
     print(f'maximum horizon: {T}')
     print(f'number of trajectories: {n_traj}')
-    print(f'drop out_obs_count_thres: {dropout_obs_count_thres}')
+    # print(f'dropout_obs_count_thres: {dropout_obs_count_thres}')
 
     ########################################################################
     ##                    some data process
     ########################################################################
-    subsample_id_list = []
-    # apply downsampling to accelerate training
-    print(f'number of trajectories: {len(id_list)}')
-    if len(id_list) > 2000:
-        downsample_size = 500
-        downsample_size = min(
-            downsample_size, subsample_size) if subsample_size is not None else downsample_size
-        # for i in range(math.ceil(len(id_list) / downsample_size)):
-        for i in range(max(math.ceil(len(id_list) / downsample_size), 250)): # Monte Carlo iterations
-            # after setting seed, subsample ids in each iteration will be the same for CC and IPW estimator
-            # we can then calculate pairwise difference
-            subsample_id = np.random.choice(
-                id_list, size=downsample_size, replace=False) # replace=True
-            subsample_id_list.append(tuple(subsample_id))
-    else:
-        subsample_id_list = [tuple(id_list)]
+    dropout_col_name = 'custom_dropout'
+    traj_df[dropout_col_name] = 0
 
     ## custom dropout model
-    if use_complete_trajs and apply_custom_dropout:
+    if use_complete_trajs:
         def custom_dropout_model(rows):
             # # discharge - model 0:
             # FiO2 = rows['FiO2_1'].values
@@ -266,18 +281,18 @@ if __name__ == '__main__':
             # c4 = -1.5
             # dropout_prob = 1 / (1 + np.exp(4.5 + c1 * I1[:-1] + c2 * I2[:-1] + c3 * I3[:-1] + c4 * I4[1:]))
             
-            # discharge - model 1:
-            SpO2 = rows['SpO2'].values
-            HR = rows['HR'].values
-            RR = rows['RR'].values
-            SOFA = rows['SOFA'].values
-            c0 = 0.1
-            c1 = 0.01
-            c2 = 0.002
-            c3 = 0.004
-            c4 = -0.12
-            dropout_prob = 1 / (1 + np.exp(c0 + c1 * SpO2[:-1] + c2 * HR[:-1] + c3 * RR[:-1] + c4 * SOFA[1:]))
-            rows['custom_dropout_prob'] = np.append(dropout_prob, None)
+            # # discharge - model 1:
+            # SpO2 = rows['SpO2'].values
+            # HR = rows['HR'].values
+            # RR = rows['RR'].values
+            # SOFA = rows['SOFA'].values
+            # c0 = 2 # 0.1
+            # c1 = 0.01
+            # c2 = 0.002
+            # c3 = 0.004
+            # c4 = -0.12
+            # dropout_prob = 1 / (1 + np.exp(c0 + c1 * SpO2[:-1] + c2 * HR[:-1] + c3 * RR[:-1] + c4 * SOFA[1:]))
+            # rows['custom_dropout_prob'] = np.append(dropout_prob, None)
 
             # # discharge - model 3:
             # SpO2 = rows['SpO2'].values
@@ -303,6 +318,81 @@ if __name__ == '__main__':
             # c4 = -0.1
             # dropout_prob = 1 / (1 + np.exp(c0 + c1 * SpO2[:-1] + c2 * HR[:-1] + c3 * RR[:-1] + c4 * GCS[1:]))
 
+            # # discharge - model 6:
+            # SpO2 = rows['SpO2'].values
+            # HR = rows['HR'].values
+            # RR = rows['RR'].values
+            # reward = rows[reward_col].values
+            # c0 = 4 # 0.1
+            # c1 = -0.02
+            # c2 = 0.002
+            # c3 = -0.02
+            # c4 = 0.4
+            # dropout_prob = 1 / (1 + np.exp(c0 + c1 * SpO2[:-1] + c2 * HR[:-1] + c3 * RR[:-1] + c4 * reward[:-1]))
+            # rows['custom_dropout_prob'] = np.append(dropout_prob, None)
+
+            # # discharge - model 7:
+            # FiO2 = rows['FiO2_1'].values
+            # HR = rows['HR'].values
+            # GCS = rows['GCS'].values
+            # SOFA = rows['SOFA'].values
+            # I1 = 1 * (FiO2 <= 0.6)
+            # I2 = 1 * np.logical_and(HR >= 60, HR <= 100)
+            # I3 = 1 * (GCS >= 14)
+            # I4 = 1 * (SOFA > 12)
+            # c1 = -0.5
+            # c2 = -0.5
+            # c3 = -0.5
+            # c4 = 0.5
+            # dropout_prob = 1 / (1 + np.exp(4 + c1 * I1[:-1] + c2 * I2[:-1] + c3 * I3[:-1] + c4 * I4[1:]))
+
+            # # discharge - model 8:
+            # FiO2 = rows['FiO2_1'].values
+            # HR = rows['HR'].values
+            # RR = rows['RR'].values
+            # GCS = rows['GCS'].values
+            # mechvent = rows['mechvent'].values
+            # I1 = 1 * (FiO2 <= 0.6)
+            # I2 = 1 * np.logical_and(HR >= 60, HR <= 100)
+            # I3 = 1 * np.logical_and(RR >= 10, RR <= 30) # mechvent
+            # I4 = GCS
+            # c1 = -0.5
+            # c2 = -0.5
+            # c3 = -0.2 # 3.5
+            # c4 = -0.1
+            # dropout_prob = 1 / (1 + np.exp(4.5 + c1 * I1[:-1] + c2 * I2[:-1] + c3 * I3[:-1] + c4 * I4[1:]))
+
+            # # discharge - model 8*:
+            # FiO2 = rows['FiO2_1'].values
+            # HR = rows['HR'].values
+            # RR = rows['RR'].values
+            # GCS = rows['GCS'].values
+            # mechvent = rows['mechvent'].values
+            # I1 = 1 * (FiO2 <= 0.6)
+            # I2 = 1 * np.logical_and(HR >= 60, HR <= 100)
+            # I3 = 1 * np.logical_and(RR >= 10, RR <= 30) # mechvent
+            # I4 = 1 * (GCS >= 14)
+            # c1 = -0.5
+            # c2 = -0.5
+            # c3 = -0.2 # 3.5
+            # c4 = -1.5
+            # dropout_prob = 1 / (1 + np.exp(5 + c1 * I1[:-1] + c2 * I2[:-1] + c3 * I3[:-1] + c4 * I4[1:]))
+
+            # # discharge - model 9:
+            # FiO2 = rows['FiO2_1'].values
+            # HR = rows['HR'].values
+            # RR = rows['RR'].values
+            # GCS = rows['GCS'].values
+            # I1 = 1 * (GCS >= 14)
+            # I2 = 1 * np.logical_and(HR >= 60, HR <= 100)
+            # I3 = 1 * np.logical_and(RR >= 10, RR <= 30) # mechvent
+            # I4 = FiO2
+            # c1 = -0.5
+            # c2 = -0.5
+            # c3 = -0.2 # 3.5
+            # c4 = 1
+            # dropout_prob = 1 / (1 + np.exp(3.5 + c1 * I1[:-1] + c2 * I2[:-1] + c3 * I3[:-1] + c4 * I4[1:]))
+
             # # mortality - model 1:
             # SpO2 = rows['SpO2'].values
             # HR = rows['HR'].values
@@ -314,6 +404,18 @@ if __name__ == '__main__':
             # c3 = 0.05
             # c4 = -0.2
             # dropout_prob = 1 / (1 + np.exp(c0 + c1 * SpO2[:-1] + c2 * HR[:-1] + c3 * RR[:-1] + c4 * SOFA[1:]))
+
+            # mortality - model 1*:
+            SpO2 = rows['SpO2'].values
+            HR = rows['HR'].values
+            RR = rows['RR'].values
+            SOFA = rows['SOFA'].values
+            c0 = -27
+            c1 = 0.35
+            c2 = 0.01
+            c3 = 0.04
+            c4 = -0.3
+            dropout_prob = 1 / (1 + np.exp(c0 + c1 * SpO2[:-1] + c2 * HR[:-1] + c3 * RR[:-1] + c4 * SOFA[1:]))
 
             # # mortality - model 2:
             # SpO2 = rows['SpO2'].values
@@ -330,41 +432,95 @@ if __name__ == '__main__':
             rows['custom_dropout_prob'] = np.append(dropout_prob, None)
             return rows
 
-        traj_df = traj_df.groupby('icustayid').apply(func=custom_dropout_model)
-        print('custom_dropout_prob:')
-        print(traj_df['custom_dropout_prob'].describe())
+        def mark_synthetic_terminal(rows):
+            dropout_prob_traj = rows['custom_dropout_prob'].values.astype(float)
+            dropout_index = np.where(
+                np.random.uniform(
+                    low=0, high=1, size=dropout_prob_traj.shape) <
+                dropout_prob_traj)[0]
+            dropout_next_traj = np.zeros_like(dropout_prob_traj)
+            if len(dropout_index) > 0:
+                dropout_index = dropout_index.min()
+                dropout_next_traj[dropout_index] = 1
+            rows[dropout_col_name] = dropout_next_traj
+            return rows
 
-    ## custom dropout indicator 
-    if not args.use_complete_trajs:
+        traj_df = traj_df.groupby('icustayid').apply(func=custom_dropout_model)
+        traj_df = traj_df.groupby('icustayid').apply(func=mark_synthetic_terminal)
+        print(traj_df['custom_dropout_prob'].values)
+        num_dropout = traj_df[dropout_col_name].sum().astype(int)
+        print('number of dropout cases:', num_dropout)
+
+        dropout_ids = traj_df.loc[traj_df[dropout_col_name] == 1, 'icustayid'].values.tolist()
+        complete_ids = [i for i in id_list if i not in dropout_ids]
+
+        if not apply_custom_dropout:
+            traj_df.drop(columns=['custom_dropout_prob', dropout_col_name], inplace=True)
+    else:
+        # custom dropout indicator
         print('apply custom dropout definition')
         dropout_col_name = 'custom_dropout' # this col name is used as identifier for custom dropout, do not alter it
 
-        # # early death in ICU as dropout
-        # def mark_terminal_event(rows):
-        #     early_morta = (rows['died_within_48h_of_out_time'].iloc[0] == 1) & (rows['delay_end_of_record_and_discharge_or_death'].iloc[0] < 24)
-        #     rows[dropout_col_name] = 0
-        #     if early_morta:
-        #         rows[dropout_col_name].iloc[-1] = 1
-        #     return rows
-
-        # # early discharge: when the trajectory length is shorter than T(max_horizon)
-        # def mark_terminal_event(rows):
-        #     early_morta = (rows['died_within_48h_of_out_time'].iloc[0] == 1) & (rows['delay_end_of_record_and_discharge_or_death'].iloc[0] < 24)
-        #     rows[dropout_col_name] = 0
-        #     if len(rows) < T:
-        #         rows[dropout_col_name].iloc[-1] = 1
-        #     return rows     
-        
-        # early discharge: only when there is outtime present in the time window
-        def mark_terminal_event(rows):
-            early_morta = (rows['died_within_48h_of_out_time'].iloc[0] == 1) & (rows['delay_end_of_record_and_discharge_or_death'].iloc[0] < 24)
-            rows[dropout_col_name] = 0
-            if len(rows) < T and rows['outtime'].iloc[0] <= rows['presumed_onset'].iloc[0] + pd.Timedelta(52, unit='h'):
-                rows[dropout_col_name].iloc[-1] = 1
-            return rows        
+        if not args.exclude_icu_morta:
+            print('early death in ICU as dropout')
+            # early death in ICU as dropout
+            def mark_terminal_event(rows):
+                early_morta = (rows['died_within_48h_of_out_time'].iloc[0] == 1) & (rows['delay_end_of_record_and_discharge_or_death'].iloc[0] < 24)
+                rows[dropout_col_name] = 0
+                if early_morta:
+                    rows[dropout_col_name].iloc[-1] = 1
+                return rows
+        else:
+            # early discharge: when the trajectory length is shorter than T(max_horizon)
+            def mark_terminal_event(rows):
+                rows[dropout_col_name] = 0
+                if len(rows) < T:
+                    rows[dropout_col_name].iloc[-1] = 1
+                return rows     
+            
+            # # early discharge: only when there is outtime present in the time window
+            # def mark_terminal_event(rows):
+            #     rows[dropout_col_name] = 0
+            #     if len(rows) < T and rows['outtime'].iloc[0] <= rows['presumed_onset'].iloc[0] + pd.Timedelta(52, unit='h'):
+            #         rows[dropout_col_name].iloc[-1] = 1
+            #     return rows        
         
         traj_df = traj_df.groupby('icustayid').apply(func=mark_terminal_event)
-        print('number of dropout cases:', traj_df[dropout_col_name].sum())
+        num_dropout = traj_df[dropout_col_name].sum()
+        print('number of dropout cases:', num_dropout)
+        dropout_ids = traj_df.loc[traj_df[dropout_col_name] == 1, 'icustayid'].values.tolist()
+        complete_ids = [i for i in id_list if i not in dropout_ids]
+    # apply downsampling to accelerate training
+    print('number of trajectories:', len(id_list))
+    subsample_id_list = []
+    if casewise_downsampling:
+        dropout_sample_ratio = 0.2
+        print('dropout sample ratio', dropout_sample_ratio)
+    if len(id_list) > 2000:
+        downsample_size = 500
+        downsample_size = min(
+            downsample_size, subsample_size) if subsample_size is not None else downsample_size
+        # for i in range(math.ceil(len(id_list) / downsample_size)):
+        for i in range(max(math.ceil(len(id_list) / downsample_size), 25)): # Monte Carlo iterations
+            if casewise_downsampling:
+                dropout_subsample_size = int(downsample_size * dropout_sample_ratio)
+                dropout_subsample_id = np.random.choice(dropout_ids, size=dropout_subsample_size, replace=True)
+                complete_subsample_id = np.random.choice(complete_ids, size=downsample_size - dropout_subsample_size, replace=True)
+                subsample_id = np.concatenate([dropout_subsample_id, complete_subsample_id]).tolist()
+            else:
+                # after setting seed, subsample ids in each iteration will be the same for CC and IPW estimator
+                subsample_id = np.random.choice(
+                    id_list, size=downsample_size, replace=False).tolist() # replace=True
+            subsample_id_list.append(tuple(subsample_id))
+    else:
+        if casewise_downsampling:
+            dropout_subsample_size = int(len(id_list) * dropout_sample_ratio)
+            dropout_subsample_id = np.random.choice(dropout_ids, size=dropout_subsample_size, replace=True)
+            complete_subsample_id = np.random.choice(complete_ids, size=len(id_list) - dropout_subsample_size, replace=True)
+            subsample_id = np.concatenate([dropout_subsample_id, complete_subsample_id]).tolist()
+            subsample_id_list = [tuple(subsample_id)]
+        else:
+            subsample_id_list = [tuple(id_list)]
 
     ########################################################################
     ##                    specify features
@@ -378,7 +534,8 @@ if __name__ == '__main__':
     selected_features = static_features + dynamic_features
     print(f'selected_features: {selected_features}')
     state_dim = len(selected_features)
-    scaler_path = os.path.join(data_dir, f'feature{state_dim}_scaler.pkl')
+    # scaler_path = os.path.join(data_dir, f'feature{state_dim}_scaler.pkl')
+    scaler_path = os.path.join(data_dir, f'feature{state_dim}_scaler{filename_suffix}.pkl')
     default_scaler = "MinMax"
     if os.path.exists(scaler_path):
         scale = scaler_path
@@ -389,36 +546,53 @@ if __name__ == '__main__':
     ##                 dropout model specification
     ########################################################################
 
-    # discrete candidate instrumental variables based on quartiles
-    traj_df['GCS_disc'] = 0
-    traj_df.loc[traj_df['GCS'] <= 6, 'GCS_disc'] = 1
-    traj_df.loc[(traj_df['GCS'] > 6) & (traj_df['GCS'] <= 9), 'GCS_disc'] = 2
-    traj_df.loc[(traj_df['GCS'] > 9) & (traj_df['GCS'] <= 12), 'GCS_disc'] = 3
-    traj_df.loc[traj_df['GCS'] > 12, 'GCS_disc'] = 4
-    traj_df['Hb_disc'] = 0
-    traj_df.loc[traj_df['Hb'] <= 9, 'Hb_disc'] = 1
-    traj_df.loc[(traj_df['Hb'] > 9) & (traj_df['Hb'] <= 10), 'Hb_disc'] = 2
-    traj_df.loc[(traj_df['Hb'] > 10) & (traj_df['Hb'] <= 11), 'Hb_disc'] = 3
-    traj_df.loc[traj_df['Hb'] > 11, 'Hb_disc'] = 4    
-    traj_df['PT_disc'] = 0
-    traj_df.loc[traj_df['PT'] <= 13, 'PT_disc'] = 1
-    traj_df.loc[(traj_df['PT'] > 13) & (traj_df['PT'] <= 14), 'PT_disc'] = 2
-    traj_df.loc[(traj_df['PT'] > 14) & (traj_df['PT'] <= 16), 'PT_disc'] = 3
-    traj_df.loc[traj_df['PT'] > 16, 'PT_disc'] = 4
-    traj_df['Arterial_pH_disc'] = 0
-    traj_df.loc[traj_df['Arterial_pH'] <= 7.35, 'Arterial_pH_disc'] = 1
-    traj_df.loc[(traj_df['Arterial_pH'] > 7.35) & (traj_df['Arterial_pH'] <= 7.40), 'Arterial_pH_disc'] = 2
-    traj_df.loc[(traj_df['Arterial_pH'] > 7.40) & (traj_df['Arterial_pH'] <= 7.44), 'Arterial_pH_disc'] = 3
-    traj_df.loc[traj_df['Arterial_pH'] > 7.44, 'Arterial_pH_disc'] = 4
+    # # discrete candidate instrumental variables based on quartiles
+    # traj_df['GCS_disc'] = 0
+    # traj_df.loc[traj_df['GCS'] <= 6, 'GCS_disc'] = 1
+    # traj_df.loc[(traj_df['GCS'] > 6) & (traj_df['GCS'] <= 9), 'GCS_disc'] = 2
+    # traj_df.loc[(traj_df['GCS'] > 9) & (traj_df['GCS'] <= 12), 'GCS_disc'] = 3
+    # traj_df.loc[traj_df['GCS'] > 12, 'GCS_disc'] = 4
+    # traj_df['Hb_disc'] = 0
+    # traj_df.loc[traj_df['Hb'] <= 9, 'Hb_disc'] = 1
+    # traj_df.loc[(traj_df['Hb'] > 9) & (traj_df['Hb'] <= 10), 'Hb_disc'] = 2
+    # traj_df.loc[(traj_df['Hb'] > 10) & (traj_df['Hb'] <= 11), 'Hb_disc'] = 3
+    # traj_df.loc[traj_df['Hb'] > 11, 'Hb_disc'] = 4    
+    # traj_df['PT_disc'] = 0
+    # traj_df.loc[traj_df['PT'] <= 13, 'PT_disc'] = 1
+    # traj_df.loc[(traj_df['PT'] > 13) & (traj_df['PT'] <= 14), 'PT_disc'] = 2
+    # traj_df.loc[(traj_df['PT'] > 14) & (traj_df['PT'] <= 16), 'PT_disc'] = 3
+    # traj_df.loc[traj_df['PT'] > 16, 'PT_disc'] = 4
+    # traj_df['Arterial_pH_disc'] = 0
+    # traj_df.loc[traj_df['Arterial_pH'] <= 7.35, 'Arterial_pH_disc'] = 1
+    # traj_df.loc[(traj_df['Arterial_pH'] > 7.35) & (traj_df['Arterial_pH'] <= 7.40), 'Arterial_pH_disc'] = 2
+    # traj_df.loc[(traj_df['Arterial_pH'] > 7.40) & (traj_df['Arterial_pH'] <= 7.44), 'Arterial_pH_disc'] = 3
+    # traj_df.loc[traj_df['Arterial_pH'] > 7.44, 'Arterial_pH_disc'] = 4
+    # traj_df['Arterial_lactate_disc'] = 0
+    # traj_df.loc[traj_df['Arterial_lactate'] <= 1.1, 'Arterial_lactate_disc'] = 1
+    # traj_df.loc[(traj_df['Arterial_lactate'] > 1.1) & (traj_df['Arterial_lactate'] <= 1.5), 'Arterial_lactate_disc'] = 2
+    # traj_df.loc[(traj_df['Arterial_lactate'] > 1.5) & (traj_df['Arterial_lactate'] <= 2.1), 'Arterial_lactate_disc'] = 3
+    # traj_df.loc[traj_df['Arterial_lactate'] > 2.1, 'Arterial_lactate_disc'] = 4
+    # traj_df['Calcium_disc'] = 0
+    # traj_df.loc[traj_df['Calcium'] <= 7.8, 'Calcium_disc'] = 1
+    # traj_df.loc[(traj_df['Calcium'] > 7.8) & (traj_df['Calcium'] <= 8.2), 'Calcium_disc'] = 2
+    # traj_df.loc[(traj_df['Calcium'] > 8.2) & (traj_df['Calcium'] <= 8.7), 'Calcium_disc'] = 3
+    # traj_df.loc[traj_df['Calcium'] > 8.7, 'Calcium_disc'] = 4
+    traj_df['Ionised_Ca_disc'] = 0
+    traj_df.loc[traj_df['Ionised_Ca'] <= 1.09, 'Ionised_Ca_disc'] = 1
+    traj_df.loc[(traj_df['Ionised_Ca'] > 1.09) & (traj_df['Ionised_Ca'] <= 1.13), 'Ionised_Ca_disc'] = 2
+    traj_df.loc[(traj_df['Ionised_Ca'] > 1.13) & (traj_df['Ionised_Ca'] <= 1.18), 'Ionised_Ca_disc'] = 3
+    traj_df.loc[traj_df['Ionised_Ca'] > 1.18, 'Ionised_Ca_disc'] = 4
     # indicator of normal range
     traj_df['FiO2_1_normal'] = 1. * (traj_df['FiO2_1'] <= 0.6)
     traj_df['HR_normal'] = 1. * ((traj_df['HR'] >= 60) & (traj_df['HR'] <= 100))
     traj_df['RR_normal'] = 1. * ((traj_df['RR'] >= 10) & (traj_df['RR'] <= 30))
     traj_df['GCS_normal'] = 1. * (traj_df['GCS'] >= 14)
     
-    mnar_instrument_var = 'Hb_disc' # 'GCS_disc', 'PT_disc', 'Hb_disc', 'Arterial_pH_disc'
+    # traj_df['binary_SOFA'] = 1 * (traj_df['SOFA'] > 12)
+    
+    mnar_instrument_var = 'Ionised_Ca_disc' # 'GCS_disc', 'PT_disc', 'Hb_disc', 'Arterial_pH_disc', 'Arterial_lactate_disc', 'Ionised_Ca_disc', 'Calcium_disc'
     mnar_instrument_var_index = None
-    mnar_nextobs_var = ['SOFA'] # ['SOFA'], ['Arterial_lactate'], ['GCS'], ['GCS_normal']
+    mnar_nextobs_var = ['SOFA'] # ['SOFA'], ['Arterial_lactate'], ['GCS'], ['GCS_normal'], ['FiO2_1']
     mnar_noninstrument_var = ['SpO2','HR','RR'] # ['FiO2_1_normal','HR_normal','RR_normal'], ['SpO2','HR','RR']
     include_reward = False # use reward as outcome, this will override mnar_nextobs_var
 
@@ -461,28 +635,32 @@ if __name__ == '__main__':
     ########################################################################
     if run_offline_RL:
         print(f'RL agent: {RL_agent}')
+        # allow the reward for RL to be different from reward for OPE
+        rl_reward_name = custom_reward_name
+        # rl_reward_name = 'raghu_v1'
         # forward RL
         holdout_id_list = holdout_df[id_col].unique()
-        rl_suffix = '' # can be used to distinguish different versions
         rl_export_dir =  os.path.expanduser(f"~/Projects/ope_mnar/output/sepsis/batch_rl{rl_suffix}")
-        pathlib.Path(os.path.join(rl_export_dir)).mkdir(
-            parents=True, exist_ok=True)
+        pathlib.Path(os.path.join(rl_export_dir)).mkdir(parents=True, exist_ok=True)
+        
+        if os.path.exists(scaler_path):
+            with open(scaler_path,'rb') as f:
+                scaler = pickle.load(f)
+        else:
+            # full_traj_df = pd.read_csv(os.path.join(data_dir, f"sepsis_processed_state_action3_reward{exclude_icu_morta_str}{shift_bloc_str}.csv"))
+            full_traj_df = pd.read_csv(os.path.join(data_dir, f"sepsis_processed_state_action3_reward{filename_suffix}.csv"))
+            scaler = MinMaxScaler()
+            scaler.fit(full_traj_df[selected_features])
+            with open(scaler_path, 'wb') as f:
+                pickle.dump(scaler, f)
+        
         logger_filename = os.path.join(
-                rl_export_dir, f'{RL_agent.lower()}_state{state_dim}_act{num_actions}_reward_{custom_reward_name}_Q')
+                rl_export_dir, f'{RL_agent.lower()}_state{state_dim}_act{num_actions}_reward_{rl_reward_name}_Q')
         print(f'logger_filename: {logger_filename}')
         if not os.path.exists(logger_filename):
             # retrain the optimal policy
             device = torch.device(
                 "cuda:0" if torch.cuda.is_available() else "cpu")
-            if os.path.exists(scaler_path):
-                with open(scaler_path,'rb') as f:
-                    scaler = pickle.load(f)
-            else:
-                full_traj_df = pd.read_csv(os.path.join(data_dir, f"sepsis_processed_state_action3_reward{exclude_icu_morta_str}{shift_bloc_str}.csv"))
-                scaler = MinMaxScaler()
-                scaler.fit(full_traj_df[selected_features])
-                with open(scaler_path, 'wb') as f:
-                    pickle.dump(scaler, f)
             holdout_df_scaled = holdout_df.copy(deep=True)
             holdout_df_scaled[selected_features] = scaler.transform(
                 holdout_df[selected_features])
@@ -532,14 +710,15 @@ if __name__ == '__main__':
             holdout_df[selected_features])
         S = holdout_df_scaled[selected_features]
         loss_fig_name = os.path.join(
-            rl_export_dir, f'{RL_agent}_state{state_dim}_act{num_actions}_reward_{custom_reward_name}_loss.png')
+            rl_export_dir, f'{RL_agent}_state{state_dim}_act{num_actions}_reward_{rl_reward_name}_loss.png')
+        max_iters = int(2e5)
         if RL_agent.lower() == 'dqn':
             if not prioritized_replay:
                 dqn_filename = os.path.join(
-                    rl_export_dir, f'dqn_state{state_dim}_act{num_actions}_reward_{custom_reward_name}')
+                    rl_export_dir, f'dqn_state{state_dim}_act{num_actions}_reward_{rl_reward_name}')
             else:
                 dqn_filename = os.path.join(
-                    rl_export_dir, f'dqn_per_state{state_dim}_act{num_actions}_reward_{custom_reward_name}')
+                    rl_export_dir, f'dqn_per_state{state_dim}_act{num_actions}_reward_{rl_reward_name}')
             hidden_sizes = [256, 256]
             if not os.path.exists(dqn_filename+'_Q'):
                 # train DQN
@@ -557,8 +736,7 @@ if __name__ == '__main__':
                             polyak_target_update=True,
                             target_update_frequency=1e3,
                             tau=0.005)
-                dqn.train(replay_buffer=buffer, max_iters=int(
-                    1e5), minibatch_size=256, verbose=True)
+                dqn.train(replay_buffer=buffer, max_iters=max_iters, minibatch_size=256, verbose=True)
                 print('Finished!')
                 # evaluate learned policy
                 V_int = dqn.evaluate(initial_states=initial_states)
@@ -581,10 +759,10 @@ if __name__ == '__main__':
         elif RL_agent.lower() == 'dueling-dqn':
             if not prioritized_replay:
                 dqn_filename = os.path.join(
-                    rl_export_dir, f'dueling-dqn_state{state_dim}_act{num_actions}_reward_{custom_reward_name}')
+                    rl_export_dir, f'dueling-dqn_state{state_dim}_act{num_actions}_reward_{rl_reward_name}')
             else:
                 dqn_filename = os.path.join(
-                    rl_export_dir, f'dueling-dqn_per_state{state_dim}_act{num_actions}_reward_{custom_reward_name}')
+                    rl_export_dir, f'dueling-dqn_per_state{state_dim}_act{num_actions}_reward_{rl_reward_name}')
             hidden_sizes = [256, 256]
             if not os.path.exists(dqn_filename+'_Q'):
                 # train DQN
@@ -600,8 +778,7 @@ if __name__ == '__main__':
                                     polyak_target_update=True,
                                     target_update_frequency=1e3,
                                     tau=0.005)
-                dqn.train(replay_buffer=buffer, max_iters=int(
-                    1e5), minibatch_size=256, verbose=True)
+                dqn.train(replay_buffer=buffer, max_iters=max_iters, minibatch_size=256, verbose=True)
                 print('Finished!')
                 # evaluate learned policy
                 V_int = dqn.evaluate(initial_states=initial_states)
@@ -623,7 +800,7 @@ if __name__ == '__main__':
                 return opt_action.detach().numpy()
         elif RL_agent.lower() == 'bcq':
             bcq_filename = os.path.join(
-                rl_export_dir, f'bcq_state{state_dim}_act{num_actions}_reward_{custom_reward_name}')
+                rl_export_dir, f'bcq_state{state_dim}_act{num_actions}_reward_{rl_reward_name}')
             hidden_sizes = [256, 256]
             if not os.path.exists(bcq_filename+'_Q'):
                 # train BCQ
@@ -639,8 +816,7 @@ if __name__ == '__main__':
                                     polyak_target_update=True,
                                     target_update_frequency=1e3,
                                     tau=0.005)
-                bcq.train(replay_buffer=buffer, max_iters=int(
-                    1e5), minibatch_size=256, verbose=True)
+                bcq.train(replay_buffer=buffer, max_iters=max_iters, minibatch_size=256, verbose=True)
                 print('Finished!')
                 # evaluate learned policy
                 V_int = bcq.evaluate(initial_states=initial_states)
@@ -662,7 +838,7 @@ if __name__ == '__main__':
                 return opt_action.detach().numpy()        
         elif RL_agent.lower() == 'rem':
             rem_filename = os.path.join(
-                rl_export_dir, f'rem_state{state_dim}_act{num_actions}_reward_{custom_reward_name}')
+                rl_export_dir, f'rem_state{state_dim}_act{num_actions}_reward_{rl_reward_name}')
 
             num_networks = 4
             hidden_sizes = [256, 256]
@@ -684,8 +860,7 @@ if __name__ == '__main__':
                             polyak_target_update=True,
                             target_update_frequency=1e3,
                             tau=0.005)
-                rem.train(replay_buffer=buffer, max_iters=int(
-                    1e5), minibatch_size=256, verbose=True)
+                rem.train(replay_buffer=buffer, max_iters=max_iters, minibatch_size=256, verbose=True)
                 print('Finished!')
                 # evaluate learned policy
                 V_int = rem.evaluate(initial_states=initial_states)
@@ -740,7 +915,7 @@ if __name__ == '__main__':
             model_type=behavior_model_type,
             train_ratio=0.8,
             export_dir=export_dir,
-            pkl_filename="behavior_policy_model.pkl",
+            pkl_filename=None, # "behavior_policy_model.pkl"
             seed=seed,
             verbose=True,
             use_holdout_data=True,
@@ -787,7 +962,7 @@ if __name__ == '__main__':
             action_col=action_col,
             reward_col=reward_col,
             id_col=id_col,
-            dropout_col='custom_dropout' if not args.use_complete_trajs else None,
+            dropout_col='custom_dropout', # 'custom_dropout' if not args.use_complete_trajs else None
             subsample_id=subsample_id,  # None
             reward_transform=reward_transform,
             burn_in=burn_in,
@@ -805,7 +980,7 @@ if __name__ == '__main__':
 
         _ = gc.collect()
 
-        if ipw:
+        if ipw and estimate_missing_prob:
             print(f'Fit dropout model')
             print(f'missing mechanism: {missing_mechanism}')
             filename_train = f'train_with_T_{T}_n_{n}_L_{dof}_gamma{discount}_{estimator_str}'
@@ -814,7 +989,7 @@ if __name__ == '__main__':
                 model_type=dropout_model_type,
                 missing_mechanism=missing_mechanism,
                 train_ratio=0.8,
-                scale_obs=True,
+                scale_obs=True, # True, False
                 dropout_obs_count_thres=dropout_obs_count_thres,
                 export_dir=export_dir,
                 pkl_filename=f"sepsis_mnar_dropout_model_T{T}_n{n_traj}.pkl",
@@ -885,7 +1060,7 @@ if __name__ == '__main__':
             result_summary['V_int_std'].append(V_int_std)
             result_summary['V_int_lower'].append(V_int_lower)
             result_summary['V_int_upper'].append(V_int_upper)
-            if ipw and missing_mechanism == 'mnar':
+            if ipw and estimate_missing_prob and missing_mechanism == 'mnar':
                 result_summary['gamma_hat'].append(list(mimic_ope.mnar_gamma))
 
             if ope_export_dir:

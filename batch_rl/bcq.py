@@ -217,7 +217,6 @@ class discrete_BCQ(object):
         Q_val = Q_val.gather(dim=1, index=opt_actions).detach().cpu().numpy()
         return np.mean(Q_val)
 
-
     def plot_loss(self, smooth_window=1000):
         fig = plt.figure()
         _ = sns.lineplot(data=moving_average(np.array(self.loss_history).flatten(), smooth_window))
