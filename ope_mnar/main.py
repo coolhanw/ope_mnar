@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import time
 
-from direct_method import OfflineQLearn
+from direct_method import FittedQEval
 from utils import SimEnv, VectorSimEnv
 
 
@@ -121,7 +121,7 @@ def train_Q_func(
         else:
             env = SimEnv(T=T, **kwargs)
     env.T = T
-    agent = OfflineQLearn(env=env,
+    agent = FittedQEval(env=env,
                        n=n,
                        scale=scale,
                        product_tensor=product_tensor,
@@ -321,7 +321,7 @@ def get_target_value_multi(T=25,
         else:
             env = SimEnv(T=T, **kwargs)
     env.T = T
-    b = OfflineQLearn(env=env,
+    b = FittedQEval(env=env,
                    n=n,
                    scale=scale,
                    product_tensor=product_tensor,
@@ -534,7 +534,7 @@ def eval_V_int_CI_multi(
         else:
             env = SimEnv(T=T, **kwargs)
     env.T = T
-    agent = OfflineQLearn(env=env,
+    agent = FittedQEval(env=env,
                        n=n,
                        scale=scale,
                        product_tensor=product_tensor,
@@ -640,7 +640,7 @@ def eval_V_int_CI_multi(
     while i < mc_size:
         seed = i
         np.random.seed(seed)
-        agent = OfflineQLearn(env=env,
+        agent = FittedQEval(env=env,
                         n=n,
                         scale=scale,
                         product_tensor=product_tensor,
@@ -843,7 +843,7 @@ def eval_V_int_CI_bootstrap_multi(
         else:
             env = SimEnv(T=T, **kwargs)
     env.T = T
-    agent = OfflineQLearn(env=env,
+    agent = FittedQEval(env=env,
                        n=n,
                        scale=scale,
                        product_tensor=product_tensor,
@@ -951,7 +951,7 @@ def eval_V_int_CI_bootstrap_multi(
     while i < mc_size:
         seed = i
         np.random.seed(seed)
-        agent = OfflineQLearn(env=env,
+        agent = FittedQEval(env=env,
                         n=n,
                         scale=scale,
                         product_tensor=product_tensor,

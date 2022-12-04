@@ -26,7 +26,7 @@ try:
     from batch_rl.rem import MulitNetworkQNetwork, REM, random_stochastic_matrix
     from batch_rl.utils import ReplayBuffer, ReplayBufferPER  
     from ope_mnar.utils import MinMaxScaler, VectorSepsisEnv
-    from ope_mnar.direct_method import OfflineQLearn  
+    from ope_mnar.direct_method import FittedQEval  
 except:
     sys.path.append(os.path.expanduser('~/Projects/ope_mnar'))
     sys.path.append(os.path.expanduser('~/Projects/ope_mnar/ope_mnar'))
@@ -36,7 +36,7 @@ except:
     from batch_rl.rem import MulitNetworkQNetwork, REM, random_stochastic_matrix
     from batch_rl.utils import ReplayBuffer, ReplayBufferPER  
     from ope_mnar.utils import MinMaxScaler, VectorSepsisEnv
-    from ope_mnar.direct_method import OfflineQLearn      
+    from ope_mnar.direct_method import FittedQEval      
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--discount', type=float, default=0.8)
@@ -884,7 +884,7 @@ if __name__ == '__main__':
         else:
             raise NotImplementedError
     elif eval_behavior_policy:
-        agent = OfflineQLearn(
+        agent = FittedQEval(
             env=env,
             horizon=T,
             scale=scale,  # 'MinMax'
@@ -945,7 +945,7 @@ if __name__ == '__main__':
     ########################################################################
     result_summary = collections.defaultdict(list)
     for subsample_id in subsample_id_list:
-        mimic_ope = OfflineQLearn(
+        mimic_ope = FittedQEval(
             env=env,
             horizon=T,
             scale=scale,  # 'MinMax'

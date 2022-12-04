@@ -39,7 +39,7 @@ from utils import (
 from base import SimulationBase
 
 
-class OfflineQLearn(SimulationBase):
+class FittedQEval(SimulationBase):
 
     def __init__(self,
                  env=None,
