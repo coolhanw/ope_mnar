@@ -23,7 +23,7 @@ except:
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--env', type=str,
-                    default='linear')  # 'linear', 'SAVE'
+                    default='linear2d')
 parser.add_argument('--max_episode_length', type=int, default=25)
 parser.add_argument('--discount', type=float, default=0.8)
 parser.add_argument('--num_trajs', type=int, default=500) # 250, 500
@@ -63,8 +63,6 @@ if __name__ == '__main__':
     T = args.max_episode_length
     n = args.num_trajs
     total_N = None  # T*n, None
-    num_actions = 2
-    state_dim = 2
     adaptive_dof = False
     dropout_rate = args.dropout_rate  # 0.9
     gamma = args.discount
@@ -81,7 +79,7 @@ if __name__ == '__main__':
     instrument_var_index = None
     mnar_y_transform = None
     bandwidth_factor = None
-    if env_class.lower() in ['linear', 'save']:
+    if env_class.lower() in ['linear2d', 'save']:
         if dropout_scheme == '0':
             missing_mechanism = None
         elif dropout_scheme in ['3.19', '3.20']:
@@ -552,7 +550,10 @@ if __name__ == '__main__':
             return np.zeros(shape=(obs_history.shape[0], 1))
 
     # specify environment
-    if env_class.lower() == 'linear' and vectorize_env:
+    if env_class.lower() == 'linear2d' and vectorize_env:
+        num_actions = 2
+        state_dim = 2
+        
         env_kwargs = {
             'dim': state_dim,
             'num_actions': num_actions,
@@ -578,7 +579,7 @@ if __name__ == '__main__':
         raise NotImplementedError
 
     # specify policy
-    if env_class.lower() in ['linear', 'save'] and scale_state:
+    if env_class.lower() in ['linear2d', 'save'] and scale_state:
         action_thres = 0.5
 
         def target_policy(S):
@@ -610,7 +611,7 @@ if __name__ == '__main__':
                     np.repeat([[1, 0]], repeats=S.shape[0], axis=0),
                     np.repeat([[0, 1]], repeats=S.shape[0], axis=0))
         # target policy used in our paper
-        elif env_class.lower() == 'linear':
+        elif env_class.lower() == 'linear2d':
             def target_policy(S):
                 if S[0] + S[1] > 0:
                     return [0, 1]
@@ -629,7 +630,7 @@ if __name__ == '__main__':
 
     ## eval_S_inits
     np.random.seed(seed=eval_seed)
-    if env_class.lower() in ['linear', 'save']:
+    if env_class.lower() in ['linear2d', 'save']:
         eval_S_inits_dict = {}
         for initial_scenario in initial_scenario_list:
             if initial_scenario.lower() == 'a':

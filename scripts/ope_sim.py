@@ -26,7 +26,7 @@ except:
     from ope_mnar.main import train_Q_func, get_target_value_multi
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--env', type=str, default='linear') # 'linear', 'SAVE'
+parser.add_argument('--env', type=str, default='linear2d')
 parser.add_argument('--max_episode_length', type=int, default=25) # 10, 25
 parser.add_argument('--discount', type=float, default=0.8)
 parser.add_argument('--num_trajs', type=int, default=500) # 250, 500
@@ -65,8 +65,6 @@ if __name__ == '__main__':
     T = args.max_episode_length
     n = args.num_trajs
     total_N = None
-    num_actions = 2
-    state_dim = 2
     gamma = args.discount
     mc_size = args.mc_size
     dropout_scheme = args.dropout_scheme
@@ -88,7 +86,7 @@ if __name__ == '__main__':
     instrument_var_index = None
     mnar_y_transform = None
     bandwidth_factor = None
-    if env_class.lower() in ['linear','save']:
+    if env_class.lower() in ['linear2d','save']:
         if dropout_scheme == '0':
             missing_mechanism = None
         elif dropout_scheme in ['3.19','3.20']:
@@ -511,50 +509,54 @@ if __name__ == '__main__':
     def vec_dropout_model_0(obs_history, action_history, reward_history):
         return np.zeros(shape=(obs_history.shape[0], 1))
 
-    if env_class.lower() == 'linear' and vectorize_env:
-        env_kwargs = {
-            'dim': state_dim,
-            'num_actions': num_actions,
-            'low': low,
-            'high': high, 
-            'vec_state_trans_model': vec_state_trans_model,
-            'vec_reward_model': vec_reward_model,
-            'vec_dropout_model': vec_dropout_model_0  # no dropout
-        }
+    if env_class.lower() == 'linear2d':
+        num_actions = 2
+        state_dim = 2
+        
+        if vectorize_env:
+            env_kwargs = {
+                'dim': state_dim,
+                'num_actions': num_actions,
+                'low': low,
+                'high': high, 
+                'vec_state_trans_model': vec_state_trans_model,
+                'vec_reward_model': vec_reward_model,
+                'vec_dropout_model': vec_dropout_model_0  # no dropout
+            }
 
-        env_dropout_kwargs = {
-            'dim': state_dim,
-            'num_actions': num_actions,
-            'low': low,
-            'high': high, 
-            'vec_state_trans_model': vec_state_trans_model,
-            'vec_reward_model': vec_reward_model,
-            'vec_dropout_model': vec_dropout_model
-        }
-        env = VectorSimEnv(num_envs=n, T=T, **env_kwargs)
-        env_dropout = VectorSimEnv(num_envs=n, T=T, **env_dropout_kwargs)
-    elif env_class.lower() == 'linear':
-        env_kwargs = {
-            'dim': state_dim,
-            'num_actions': num_actions,
-            'low': low,
-            'high': high, 
-            'state_trans_model': state_trans_model,
-            'reward_model': reward_model,
-            'dropout_model': dropout_model_0  # no dropout
-        }
+            env_dropout_kwargs = {
+                'dim': state_dim,
+                'num_actions': num_actions,
+                'low': low,
+                'high': high, 
+                'vec_state_trans_model': vec_state_trans_model,
+                'vec_reward_model': vec_reward_model,
+                'vec_dropout_model': vec_dropout_model
+            }
+            env = VectorSimEnv(num_envs=n, T=T, **env_kwargs)
+            env_dropout = VectorSimEnv(num_envs=n, T=T, **env_dropout_kwargs)
+        else:
+            env_kwargs = {
+                'dim': state_dim,
+                'num_actions': num_actions,
+                'low': low,
+                'high': high, 
+                'state_trans_model': state_trans_model,
+                'reward_model': reward_model,
+                'dropout_model': dropout_model_0  # no dropout
+            }
 
-        env_dropout_kwargs = {
-            'dim': state_dim,
-            'num_actions': num_actions,
-            'low': low,
-            'high': high, 
-            'state_trans_model': state_trans_model,
-            'reward_model': reward_model,
-            'dropout_model': dropout_model
-        }
-        env = SimEnv(T=T, **env_kwargs)
-        env_dropout = SimEnv(T=T, **env_dropout_kwargs)
+            env_dropout_kwargs = {
+                'dim': state_dim,
+                'num_actions': num_actions,
+                'low': low,
+                'high': high, 
+                'state_trans_model': state_trans_model,
+                'reward_model': reward_model,
+                'dropout_model': dropout_model
+            }
+            env = SimEnv(T=T, **env_kwargs)
+            env_dropout = SimEnv(T=T, **env_dropout_kwargs)
     else:
         raise NotImplementedError
 
@@ -591,7 +593,7 @@ if __name__ == '__main__':
 
     # eval_S_inits
     np.random.seed(seed=eval_seed)
-    if env_class.lower() in ['linear','save']:
+    if env_class.lower() in ['linear2d','save']:
         if scale_state:
             eval_S_inits = np.random.uniform(low=0,
                                     high=1,
@@ -610,7 +612,7 @@ if __name__ == '__main__':
         eval_S_inits_dict = {default_key: eval_kargs}
 
     ## policy
-    if env_class.lower() in ['linear','save'] and scale_state:
+    if env_class.lower() in ['linear2d','save'] and scale_state:
         action_thres = 0.5
         def target_policy(S):
             if S[0] > action_thres and S[1] > action_thres:
@@ -639,7 +641,7 @@ if __name__ == '__main__':
                 return np.where(((S[:, 0] > 0) & (S[:, 1] > 0)).reshape(-1, 1),
                                 np.repeat([[1, 0]], repeats=S.shape[0], axis=0),
                                 np.repeat([[0, 1]], repeats=S.shape[0], axis=0))
-        elif env_class.lower() == 'linear':
+        elif env_class.lower() == 'linear2d':
             # our target policy
             def target_policy(S):
                 if S[0] + S[1] > 0:
@@ -666,7 +668,7 @@ if __name__ == '__main__':
         np.random.seed(itr)
         # if the observational space of the environemnt is bounded, the initial states will only be sampled from uniform distribution
         # if we still want a normal distribution, pass random initial states manually.
-        if env_class.lower() in ['linear','save']:
+        if env_class.lower() in ['linear2d','save']:
             if scale_state:
                 train_S_inits = np.random.uniform(low=0,
                                         high=1,

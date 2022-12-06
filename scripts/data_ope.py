@@ -42,10 +42,10 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--discount', type=float, default=0.8)
 parser.add_argument('--ipw',
                     type=lambda x: (str(x).lower() == 'true'),
-                    default=False)
+                    default=True)
 parser.add_argument('--estimate_missing_prob',
                     type=lambda x: (str(x).lower() == 'true'),
-                    default=False)
+                    default=True)
 parser.add_argument('--missing_mechanism', type=str, default='mnar')
 parser.add_argument('--run_offline_RL',
                     type=lambda x: (str(x).lower() == 'true'),
@@ -70,7 +70,7 @@ parser.add_argument('--apply_custom_dropout',
                     default=False)
 parser.add_argument('--casewise_downsampling',
                     type=lambda x: (str(x).lower() == 'true'),
-                    default=True)
+                    default=False)
 args = parser.parse_args()
 
 if __name__ == '__main__':
@@ -216,12 +216,22 @@ if __name__ == '__main__':
     #     rows['reward_'+custom_reward_name] = reward_full
     #     return rows
 
-    # 3) use negative SOFA score as reward
-    custom_reward_name = 'neg_sofa'
+    # # 3) use negative SOFA score as reward
+    # custom_reward_name = 'neg_sofa'
+
+    # def custom_reward(rows):
+    #     next_sofa = rows['SOFA'].iloc[1:].values
+    #     reward = 0.1 * (23 - next_sofa)
+    #     reward_full = np.append(reward, 0)
+    #     rows['reward_'+custom_reward_name] = reward_full
+    #     return rows
+
+    # 4) use binary SOFA score as reward
+    custom_reward_name = 'binary_sofa'
 
     def custom_reward(rows):
         next_sofa = rows['SOFA'].iloc[1:].values
-        reward = 0.1 * (23 - next_sofa)
+        reward = -2 * (next_sofa >= 12) + 1
         reward_full = np.append(reward, 0)
         rows['reward_'+custom_reward_name] = reward_full
         return rows
@@ -636,7 +646,7 @@ if __name__ == '__main__':
     if run_offline_RL:
         print(f'RL agent: {RL_agent}')
         # allow the reward for RL to be different from reward for OPE
-        rl_reward_name = custom_reward_name
+        rl_reward_name = 'neg_sofa' # custom_reward_name
         # rl_reward_name = 'raghu_v1'
         # forward RL
         holdout_id_list = holdout_df[id_col].unique()
