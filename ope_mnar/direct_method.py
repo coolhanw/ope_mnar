@@ -17,7 +17,7 @@ from utils import normcdf, iden, MinMaxScaler
 from base import SimulationBase
 
 
-class FittedQEval(SimulationBase):
+class LSTDQ(SimulationBase):
 
     def __init__(self,
                  env=None,
