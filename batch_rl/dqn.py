@@ -21,21 +21,32 @@ class QNetwork(nn.Module):
         self._state_dim = state_dim
         self._num_actions = num_actions
 
+        # build network structure
         layers = []
+
+        # input layer
+        input_layer = nn.Linear(in_features=self.input_dim,
+                                out_features=hidden_sizes[0])
+        nn.init.xavier_normal_(input_layer.weight)
+        nn.init.zeros_(input_layer.bias)
+        layers.append(input_layer)
+        layers.append(nn.LeakyReLU(negative_slope=0.2))  # nn.LeakyReLU(0.01)
+
         # hidden layers
-        for prev_size, size in zip([state_dim] + hidden_sizes[:-1],
-                                    hidden_sizes):
-            linear_layer = nn.Linear(in_features=prev_size,
-                                        out_features=size)
+        for prev_size, size in zip(hidden_sizes[:-1], hidden_sizes[1:]):
+            linear_layer = nn.Linear(in_features=prev_size, out_features=size)
             nn.init.xavier_normal_(linear_layer.weight)
             nn.init.zeros_(linear_layer.bias)
             layers.append(linear_layer)
-            layers.append(nn.ReLU()) # nn.LeakyReLU(0.01)
-        
+            layers.append(nn.ReLU())  # nn.LeakyReLU(0.01)
+
         # output layer
         output_layer = nn.Linear(in_features=hidden_sizes[-1],
-                                    out_features=num_actions)
+                                 out_features=num_actions)
+        nn.init.xavier_normal_(output_layer.weight)
+        nn.init.zeros_(output_layer.bias)
         layers.append(output_layer)
+
         self.layers = nn.Sequential(*layers)
 
     def forward(self, state):

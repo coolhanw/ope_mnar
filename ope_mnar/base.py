@@ -153,8 +153,10 @@ class SimulationBase(object):
             )
         if evaluation:
             env = self.eval_env
+            max_T = env.T
         else:
             env = self.env
+            max_T = self.max_T
         # initialize the state
         if seed is not None:
             env.seed(seed)
@@ -168,7 +170,8 @@ class SimulationBase(object):
         survival_prob_traj = []
         dropout_next_traj, dropout_prob_traj = [], []
         step = 1
-        while step <= env.T:
+        # while step <= env.T:
+        while step <= max_T:
             self.low = np.minimum(self.low, np.array(S))
             self.high = np.maximum(self.high, np.array(S))
             if len(S_traj) == 1 and A_init is not None:
@@ -262,8 +265,10 @@ class SimulationBase(object):
             policy = self.obs_policy if self.obs_policy is not None else lambda S: self.env.action_space.sample()
         if evaluation:
             env = self.eval_env
+            max_T = env.T
         else:
             env = self.env
+            max_T = self.max_T
         if seed is not None:
             env.seed(seed)
         # initialize the states
@@ -274,7 +279,8 @@ class SimulationBase(object):
         survival_prob_traj = []
         dropout_next_traj, dropout_prob_traj = [], []
         step = 1
-        while step <= env.T:
+        # while step <= env.T:
+        while step <= max_T:
             self.low = np.minimum(self.low, np.min(S, axis=0))
             self.high = np.maximum(self.high, np.max(S, axis=0))
             if step == 1 and A_inits is not None:
@@ -1197,21 +1203,36 @@ class SimulationBase(object):
             action_train_list = []
             for a in range(self.num_actions):
                 X_a, y_a = X[actions == a], y[actions == a]
+                # assert len(np.unique(y_a)) > 1 # ensure at least one positive label
                 if dropout_prob is not None:
                     probT_a = dropout_prob[actions == a]
-                    X_train, X_test, y_train, y_test, obs_train, obs_test, probT_train, probT_test = train_test_split(
-                        X_a,
-                        y_a,
-                        obs[actions == a],
-                        probT_a,
-                        test_size=1 - train_ratio,
-                        random_state=seed)
+                    if train_ratio < 1:
+                        X_train, X_test, y_train, y_test, obs_train, obs_test, probT_train, probT_test = train_test_split(
+                            X_a,
+                            y_a,
+                            obs[actions == a],
+                            probT_a,
+                            test_size=1 - train_ratio,
+                            random_state=seed
+                        )
+                    else:
+                        # use all data for training
+                        X_train = X_test = X_a
+                        y_train = y_test = y_a
+                        obs_train = obs_test = obs[actions == a]
+                        probT_train = probT_test = probT_a
                     obs_train_list.append(obs_train)
                     probT_train_list.append(probT_train)
                 else:
-                    X_train, X_test, y_train, y_test, obs_train, obs_test = train_test_split(
-                        X_a, y_a, obs[actions == a], test_size=1 - train_ratio, random_state=seed)
+                    if train_ratio < 1:
+                        X_train, X_test, y_train, y_test, obs_train, obs_test = train_test_split(
+                            X_a, y_a, obs[actions == a], test_size=1 - train_ratio, random_state=seed)
+                    else:
+                        X_train = X_test = X_a
+                        y_train = y_test = y_a
+                        obs_train = obs_test = obs[actions == a]
                     probT_train, probT_test = None, None
+                    obs_train_list.append(obs_train)
                 data[a] = {
                     'X_train': X_train,
                     'X_test': X_test,
@@ -1227,6 +1248,12 @@ class SimulationBase(object):
                 probT_train = np.concatenate(probT_train_list)
             if model_type.lower() == "linear":
                 for a in range(self.num_actions):
+                    if np.sum(data[a]['y_train']) == 0: # all 0's
+                        self.fitted_dropout_model[a] = 0.
+                        continue
+                    elif np.sum(data[a]['y_train']) == len(data[a]['y_train']): # all 1's
+                        self.fitted_dropout_model[a] = 1.
+                        continue
                     logit_reg = LogisticRegression(fit_intercept=True,
                                                    **kwargs)
                     logit_reg.fit(X=data[a]['X_train'],
@@ -1251,16 +1278,23 @@ class SimulationBase(object):
                     except:
                         pass
                     if data[a]['prob_test'] is not None:
+                        nan_index = np.isnan(data[a]['prob_test'])
                         test_mse = mean_squared_error(
-                            y_true=data[a]['prob_test'],
+                            y_true=data[a]['prob_test'][~nan_index],
                             y_pred=logit_reg.predict_proba(
-                                X=data[a]['X_test'])[:, 1])
+                                X=data[a]['X_test'])[:, 1][~nan_index])
                         if verbose:
                             print(
                                 f'MSE on test set with action {a}: {test_mse}')
                     self.fitted_dropout_model[a] = logit_reg
             elif model_type.lower() == "rf":
                 for a in range(self.num_actions):
+                    if np.sum(data[a]['y_train']) == 0: # all 0's
+                        self.fitted_dropout_model[a] = 0.
+                        continue
+                    elif np.sum(data[a]['y_train']) == len(data[a]['y_train']): # all 1's
+                        self.fitted_dropout_model[a] = 1.
+                        continue
                     rf_clf = RandomForestClassifier(random_state=seed,
                                                     **kwargs)
                     rf_clf.fit(X=data[a]['X_train'],
@@ -1285,10 +1319,11 @@ class SimulationBase(object):
                     except:
                         pass
                     if data[a]['prob_test'] is not None:
+                        nan_index = np.isnan(data[a]['prob_test'])
                         test_mse = mean_squared_error(
-                            y_true=data[a]['prob_test'],
+                            y_true=data[a]['prob_test'][~nan_index],
                             y_pred=rf_clf.predict_proba(
-                                X=data[a]['X_test'])[:, 1])
+                                X=data[a]['X_test'])[:, 1][~nan_index])
                         if verbose:
                             print(
                                 f'MSE on test set with action {a}: {test_mse}')
@@ -1421,24 +1456,39 @@ class SimulationBase(object):
             delta_train = None
             while delta_train is None or np.mean(delta_train) == 1:
                 if probT_arr is not None:
-                    u_train, u_test, z_train, z_test, obs_train, obs_test, y_train, y_test, delta_train, delta_test, probT_train, probT_test = train_test_split(
-                        u_arr,
-                        z_arr,
-                        obs,
-                        y_arr,
-                        delta_arr,
-                        probT_arr,
-                        test_size=1 - train_ratio,
-                        random_state=seed)
+                    if train_ratio < 1:
+                        u_train, u_test, z_train, z_test, obs_train, obs_test, y_train, y_test, delta_train, delta_test, probT_train, probT_test = train_test_split(
+                            u_arr,
+                            z_arr,
+                            obs,
+                            y_arr,
+                            delta_arr,
+                            probT_arr,
+                            test_size=1 - train_ratio,
+                            random_state=seed)
+                    else:
+                        u_train = u_test = u_arr
+                        z_train = z_test = z_arr
+                        obs_train = obs_test = obs
+                        y_train = y_test = y_arr
+                        delta_train = delta_test = delta_arr
+                        probT_train = probT_test = probT_arr
                 else:
-                    u_train, u_test, z_train, z_test, obs_train, obs_test, y_train, y_test, delta_train, delta_test = train_test_split(
-                        u_arr,
-                        z_arr,
-                        obs,
-                        y_arr,
-                        delta_arr,
-                        test_size=1 - train_ratio,
-                        random_state=seed)
+                    if train_ratio < 1:
+                        u_train, u_test, z_train, z_test, obs_train, obs_test, y_train, y_test, delta_train, delta_test = train_test_split(
+                            u_arr,
+                            z_arr,
+                            obs,
+                            y_arr,
+                            delta_arr,
+                            test_size=1 - train_ratio,
+                            random_state=seed)
+                    else:
+                        u_train = u_test = u_arr
+                        z_train = z_test = z_arr
+                        obs_train = obs_test = obs
+                        y_train = y_test = y_arr
+                        delta_train = delta_test = delta_arr
                     probT_train, probT_test = None, None
             # train model
             mnar_clf = ExpoTiltingClassifierMNAR()
@@ -1514,14 +1564,18 @@ class SimulationBase(object):
             else:
                 prob_pred_train = np.zeros_like(probT_train)
                 for a in range(self.num_actions):
-                    prob_pred_train[action_train == a] = self.fitted_dropout_model[a].predict_proba(X=data[a]['X_train'])[:, 1]
+                    if isinstance(self.fitted_dropout_model[a], float):
+                        prob_pred_train[action_train == a] = self.fitted_dropout_model[a]
+                    else:
+                        prob_pred_train[action_train == a] = self.fitted_dropout_model[a].predict_proba(X=data[a]['X_train'])[:, 1]
             prob_pred_df['dropout_prob_est'] = prob_pred_train
             if missing_mechanism == 'mnar':
                 train_mse = mean_squared_error(
                     y_true=probT_train[delta_train == 1],
                     y_pred=prob_pred_train[delta_train == 1])
             else:
-                train_mse = mean_squared_error(y_true=probT_train, y_pred=prob_pred_train)                
+                nan_index = np.isnan(probT_train)
+                train_mse = mean_squared_error(y_true=probT_train[~nan_index], y_pred=prob_pred_train[~nan_index])                
             logitT_train = np.log(1 / np.maximum(probT_train, 1e-8) - 1)
             logit_pred_train = np.log(1 /
                                         np.maximum(prob_pred_train, 1e-8) -
@@ -1647,9 +1701,11 @@ class SimulationBase(object):
                 for a in range(self.num_actions):
                     if any(actions == a) == False:
                         continue
-                    dropout_prob_pred[actions ==
-                             a] = self.fitted_dropout_model[a].predict_proba(
-                                 X=X_mat[actions == a])[:, 1]
+                    if isinstance(self.fitted_dropout_model[a], float):
+                        dropout_prob_pred[actions == a] = self.fitted_dropout_model[a]
+                    else:
+                        dropout_prob_pred[actions == a] = self.fitted_dropout_model[a].predict_proba(
+                                    X=X_mat[actions == a])[:, 1]
             elif missing_mechanism == 'mnar':
                 traj_len = A_traj.shape[0]
                 obs = S_traj[self.dropout_obs_count_thres:traj_len]

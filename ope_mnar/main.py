@@ -265,6 +265,8 @@ def train_Q_func(
                 agent.bspline,
                 'basis_scale_factor':
                 agent.basis_scale_factor,
+                'est_beta':
+                agent.est_beta,
                 'para':
                 agent.para,
                 'para_dim':
@@ -333,6 +335,7 @@ def get_target_value_multi(T=25,
     b.para_dim = output['para_dim']
     b._initial_obs = output['init_obs']
     b.basis_scale_factor = output['basis_scale_factor']
+    b.est_beta = output['est_beta']
     np.random.seed(seed=eval_seed)
     if eval_S_inits_dict is None:
         eval_S_inits_dict = {}

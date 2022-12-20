@@ -18,7 +18,7 @@ import matplotlib.pyplot as plt
 
 __all__ = [
     'sigmoid', 'constant_fn', 'normcdf', 'iden', 'MinMaxScaler', 'MLPModule',
-    'SimEnv', 'VectorSimEnv', 'VectorSepsisEnv'
+    'SimEnv', 'VectorSimEnv', 'VectorSepsisEnv', 'InitialStateSampler', 'SimpleReplayBuffer', 'DiscretePolicy'
 ]
 
 
@@ -1377,8 +1377,115 @@ class MLPModule(pl.LightningModule):
             return y_pred
 
 
-# the following functions will be useful for policy optimization
+class InitialStateSampler():
+    """ G(ds): sample the initial state distribution
 
+    Args:
+        initial_states (np.ndarray): dimension (n,dim)
+        sampling_distribution (callable): a function that returns a batch of samples from some distribution. 
+            If None, sample from initial_states.
+        seed (int): seed for random sampling
+    """
+    def __init__(self, initial_states=None, sampling_distribution=None, seed=0):
+        # initial_states: [N, dim]
+        self.seed = seed
+        self.initial_states = np.array(initial_states)
+        self.N = len(self.initial_states)
+        self.resample_empirical = True if sampling_distribution is None else False
+        self.sampling_distribution = sampling_distribution
+        
+    def sample(self, batch_size = 32):
+        if self.resample_empirical: # resample initial?
+            return self.initial_states[np.random.choice(self.N, batch_size)]
+        else:
+            return self.sampling_distribution(size=batch_size)
+
+class SimpleReplayBuffer():
+    def __init__(self, trajs, seed=0):
+        """
+        Args:
+            # trajs (list): a list of trajs, each traj is a list of tuple (S, A, R, S')
+            trajs (dict): mapping from index to trajectory (list)
+        """
+
+        self.num_trajs = len(trajs)
+        self.states, self.actions, self.rewards, self.next_states = [], [], [], []
+        self.initial_states, self.initial_actions, self.initial_rewards = [], [], []
+        self.dropout_prob = []
+        self.time_index = []
+        
+        for traj in trajs.values():
+            states = traj[0]
+            num_transitions = len(states) - 1
+            
+            self.states.append(traj[0][:num_transitions])
+            self.actions.append(traj[1][:num_transitions])
+            self.rewards.append(traj[2][:num_transitions])
+            self.next_states.append(traj[0][1:])
+            self.dropout_prob.append(traj[6][:num_transitions])
+            self.time_index.append(list(range(num_transitions)))
+
+            self.initial_states.append(traj[0][0])
+            self.initial_actions.append(traj[1][0])
+            self.initial_rewards.append(traj[2][0])
+
+        self.states = np.vstack(self.states)
+        self.next_states = np.vstack(self.next_states)
+        self.actions = np.concatenate(self.actions)
+        self.rewards = np.concatenate(self.rewards)
+        self.dropout_prob = np.concatenate(self.dropout_prob)
+        self.time_index = np.concatenate(self.time_index)
+
+        self.initial_states = np.vstack(self.initial_states)
+        self.initial_actions = np.array(self.initial_actions)
+        # self.initial_rewards = np.array(self.initial_rewards)
+
+        self.N, self.state_dim = self.states.shape
+        self.seed = seed
+        np.random.seed(self.seed)
+        
+    def add(self, transition):
+        self.states = np.append(self.states, transition[0][np.newaxis, :], axis = 0)
+        self.next_states = np.append(self.next_states, transition[3][np.newaxis, :], axis = 0)
+        self.actions = np.append(self.actions, transition[1])
+        self.rewards = np.append(self.rewards, transition[2])
+        
+        new_dropout_prob = transition[4] if len(transition) >= 5 else None
+        self.dropout_prob = np.append(self.dropout_prob, new_dropout_prob)
+        new_time_index = transition[5] if len(transition) >= 6 else None
+        self.time_index = np.append(self.time_index, new_time_index)
+        
+    def sample(self, batch_size):
+        idx = np.random.choice(self.N, batch_size, replace = False)
+        return [self.states[idx], self.actions[idx], self.rewards[idx], self.next_states[idx], self.dropout_prob[idx]]
+
+    def sample_init_states(self, batch_size):
+        idx = np.random.choice(self.num_trajs, batch_size, replace = False)
+        return self.initial_states[idx]
+
+
+class DiscretePolicy():
+    def __init__(self, policy_func, num_actions):
+        self.policy_func = policy_func
+        self.num_actions = num_actions
+
+    def get_action_prob(self, states):
+        action = self.policy_func(states)
+        if action.shape[1] > 1:
+            return action
+        return np.eye(self.num_actions)[action]
+    
+    def get_action(self, states):
+        action = self.policy_func(states)
+        if action.shape[1] == 1:
+            # deterministic policy
+            return action.squeeze()
+        # stochastic policy, sample an action based on the probability
+        assert action.shape[1] == self.num_actions
+        action = (action.cumsum(axis=1) > np.random.rand(action.shape[0])[:, np.newaxis]).argmax(axis=1)
+        return action
+
+# the following functions will be useful for policy optimization
 
 def get_next_block_idx(current_block_idx, K_n, K_T):
     n, t = current_block_idx

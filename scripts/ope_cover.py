@@ -32,10 +32,6 @@ parser.add_argument('--mc_size', type=int, default=250)
 parser.add_argument('--eval_policy_mc_size', type=int,
                     default=10000)  # use 100 for test purpose
 parser.add_argument('--eval_horizon', type=int, default=250)
-parser.add_argument('--scale_state',
-                    type=lambda x: (str(x).lower() == 'true'),
-                    default=False,
-                    help="If True, state features are already scaled to [0,1]")
 parser.add_argument('--dropout_scheme', type=str, default='3.19') 
 parser.add_argument('--dropout_rate', type=float, default=0.9)
 parser.add_argument('--dropout_obs_count_thres', type=int, default=2)
@@ -108,10 +104,7 @@ if __name__ == '__main__':
     eval_policy_mc_size = args.eval_policy_mc_size  # 10000
     eval_horizon = args.eval_horizon  # 500
     initial_scenario_list = ['C']  # ['A', 'C', 'E']
-    scale_state = args.scale_state
-    scale = "Identity" if scale_state else default_scaler
-    low = 0 if scale_state else -norm.ppf(0.999)  # -np.inf
-    high = 1 if scale_state else norm.ppf(0.999)  # np.inf
+    scale = default_scaler
     eval_seed = 123
     product_tensor = True
     spline_degree = 3
@@ -120,7 +113,7 @@ if __name__ == '__main__':
     else:
         dof = 7
     ridge_factor = 1e-3  # 1e-9
-    folder_suffix = '_scaled' if scale_state else '_unscaled'
+    folder_suffix = '' # '_unscaled'
     folder_suffix += f'_missing{dropout_rate}'
     folder_suffix += f'_ridge{ridge_factor}'
     if env_class.upper() == 'SAVE':
@@ -133,7 +126,7 @@ if __name__ == '__main__':
     if basis_type != 'spline':
         folder_suffix += f'_{basis_type}'
     folder_suffix += log_suffix
-    if scale_state or scale == default_scaler:
+    if scale == default_scaler:
         knots = np.linspace(start=-spline_degree / (dof - spline_degree),
                             stop=1 + spline_degree / (dof - spline_degree),
                             num=dof + spline_degree +
@@ -156,7 +149,6 @@ if __name__ == '__main__':
     print(f'estimate_missing_prob : {estimate_missing_prob}')
     print(f'eval_policy_mc_size : {eval_policy_mc_size}')
     print(f'eval_horizon : {eval_horizon}')
-    print(f'scale_state : {scale_state}')
     print(f'Logged to folder: {export_dir}')
 
     mnar_scheme_list = ['3.19', '3.19-mar', '3.20', '3.20-mar']
@@ -214,23 +206,19 @@ if __name__ == '__main__':
             if dropout_scheme == '0':
                 return 0
             elif dropout_scheme == '3.19':
-                if not scale_state:
-                    if T == 25:
-                        if dropout_rate == 0.9:
-                            if dropout_obs_count_thres == 5:
-                                logit = intercept + 2.4 + 0.8 * obs_history[
-                                    -2][0] - 1.5 * reward_history[-1]
-                            elif dropout_obs_count_thres == 2:
-                                logit = intercept + 3.2 + 0.8 * obs_history[
-                                    -2][0] - 1.5 * reward_history[-1]
-                            elif dropout_obs_count_thres == 1:
-                                logit = intercept + 4 + 0.8 * obs_history[-2][
-                                    0] - 1.5 * reward_history[-1]
-                        else:
-                            raise NotImplementedError
-                else:
-                    logit = intercept + 6.5 + 1. * obs_history[-2][
-                        0] - 4.5 * reward_history[-1]
+                if T == 25:
+                    if dropout_rate == 0.9:
+                        if dropout_obs_count_thres == 5:
+                            logit = intercept + 2.4 + 0.8 * obs_history[
+                                -2][0] - 1.5 * reward_history[-1]
+                        elif dropout_obs_count_thres == 2:
+                            logit = intercept + 3.2 + 0.8 * obs_history[
+                                -2][0] - 1.5 * reward_history[-1]
+                        elif dropout_obs_count_thres == 1:
+                            logit = intercept + 4 + 0.8 * obs_history[-2][
+                                0] - 1.5 * reward_history[-1]
+                    else:
+                        raise NotImplementedError
                 prob = 1 / (np.exp(logit) + 1)
             else:
                 raise NotImplementedError
@@ -250,32 +238,18 @@ if __name__ == '__main__':
             if dropout_scheme == '0':
                 prob = np.zeros(shape=obs_history.shape[0])
             elif dropout_scheme == '3.19':
-                if not scale_state:
-                    logit = intercept + 2.4 + 0.8 * obs_history[:, -2, 0] - 1.5 * reward_history[:,-1]
-                else:
-                    logit = intercept + 6.5 + 1. * obs_history[:, -2,0] - 4.5 * reward_history[:,-1]
+                logit = intercept + 2.4 + 0.8 * obs_history[:, -2, 0] - 1.5 * reward_history[:,-1]
                 prob = 1 / (np.exp(logit) + 1)
             elif dropout_scheme == '3.19-mar':
-                if not scale_state:
-                    logit = intercept + 1.5 + 0.8 * obs_history[:, -2,0] - 1.5 * reward_history[:,-2]
-                else:
-                    logit = intercept + 6.5 + 1. * obs_history[:, -2,0] - 4.5 * reward_history[:,-2]
+                logit = intercept + 1.5 + 0.8 * obs_history[:, -2,0] - 1.5 * reward_history[:,-2]
                 prob = 1 / (np.exp(logit) + 1)
             elif dropout_scheme == '3.20':
-                if not scale_state:
-                    logit = intercept + 3 - 1. * np.power(
+                logit = intercept + 3 - 1. * np.power(
                         obs_history[:, -2, 0], 2) - 1.5 * reward_history[:, -1]
-                else:
-                    logit = intercept + 6.5 + 0.5 * np.power(
-                        obs_history[:, -2, 0], 2) - 4.5 * reward_history[:, -1]
                 prob = 1 / (np.exp(logit) + 1)
             elif dropout_scheme == '3.20-mar':
-                if not scale_state:
-                    logit = intercept + 3 - 1. * np.power(
+                logit = intercept + 3 - 1. * np.power(
                         obs_history[:, -2, 0], 2) - 1.5 * reward_history[:, -2]
-                else:
-                    logit = intercept + 6.5 + 0.5 * np.power(
-                        obs_history[:, -2, 0], 2) - 4.5 * reward_history[:, -2]
                 prob = 1 / (np.exp(logit) + 1)
             else:
                 raise NotImplementedError
@@ -333,23 +307,19 @@ if __name__ == '__main__':
             if dropout_scheme == '0':
                 return 0
             elif dropout_scheme == '3.19':
-                if not scale_state:
-                    if T == 25:
-                        if dropout_rate == 0.9:
-                            if dropout_obs_count_thres == 5:
-                                logit = intercept + 2.4 + 0.8 * obs_history[
-                                    -2][0] - 1.5 * reward_history[-1]
-                            elif dropout_obs_count_thres == 2:
-                                logit = intercept + 3.2 + 0.8 * obs_history[
-                                    -2][0] - 1.5 * reward_history[-1]
-                            elif dropout_obs_count_thres == 1:
-                                logit = intercept + 4 + 0.8 * obs_history[-2][
-                                    0] - 1.5 * reward_history[-1]
-                        else:
-                            raise NotImplementedError
-                else:
-                    logit = intercept + 6.5 + 1. * obs_history[-2][
-                        0] - 4.5 * reward_history[-1]
+                if T == 25:
+                    if dropout_rate == 0.9:
+                        if dropout_obs_count_thres == 5:
+                            logit = intercept + 2.4 + 0.8 * obs_history[
+                                -2][0] - 1.5 * reward_history[-1]
+                        elif dropout_obs_count_thres == 2:
+                            logit = intercept + 3.2 + 0.8 * obs_history[
+                                -2][0] - 1.5 * reward_history[-1]
+                        elif dropout_obs_count_thres == 1:
+                            logit = intercept + 4 + 0.8 * obs_history[-2][
+                                0] - 1.5 * reward_history[-1]
+                    else:
+                        raise NotImplementedError
                 prob = 1 / (np.exp(logit) + 1)
             else:
                 raise NotImplementedError
@@ -370,174 +340,160 @@ if __name__ == '__main__':
             if dropout_scheme == '0':
                 prob = np.zeros(shape=obs_history.shape[0])
             elif dropout_scheme == '3.19':
-                if not scale_state:
-                    if T == 25:
-                        if dropout_rate == 0.6:
-                            logit = intercept + 7.0 + 0.8 * obs_history[:, -2,0] - 1.5 * reward_history[:,-1]
-                            logit = intercept + 5.0 + 0.8 * obs_history[:, -2,0] - 1.5 * reward_history[:,-1]
-                        elif dropout_rate == 0.8:
-                            logit = intercept + 3.6 + 0.8 * obs_history[:, -2,0] - 1.5 * reward_history[:,-1]
-                        elif dropout_rate == 0.9:
-                            if dropout_obs_count_thres == 5:
-                                logit = intercept + 2.4 + 0.8 * obs_history[:,-2,0] - 1.5 * reward_history[:, -1]
-                            elif dropout_obs_count_thres == 2:
-                                logit = intercept + 3.2 + 0.8 * obs_history[:,-2,0] - 1.5 * reward_history[:,-1]
-                            elif dropout_obs_count_thres == 1:
-                                logit = intercept + 4 + 0.8 * obs_history[:,-2,0] - 1.5 * reward_history[:,-1]
-                        else:
-                            raise NotImplementedError
-                    elif T == 10:
-                        if dropout_rate == 0.6:
-                            if dropout_obs_count_thres == 5:
-                                logit = intercept + 2 + 0.8 * obs_history[:,-2,0] - 1.5 * reward_history[:,-1]
-                            elif dropout_obs_count_thres == 3:
-                                logit = intercept + 3 + 0.8 * obs_history[:,-2,0] - 1.5 * reward_history[:,-1]
-                            elif dropout_obs_count_thres == 2:
-                                logit = intercept + 4 + 0.8 * obs_history[:,-2,0] - 1.5 * reward_history[:,-1]
-                        elif dropout_rate == 0.7:
-                            logit = intercept + 0. + 0.8 * obs_history[:, -2,0] - 1.5 * reward_history[:,-1]
-                        elif dropout_rate == 0.8:
-                            logit = intercept - 0.8 + 0.8 * obs_history[:, -2,0] - 1.5 * reward_history[:,-1]
-                        elif dropout_rate == 0.9:
-                            if dropout_obs_count_thres == 6:
-                                logit = intercept - 2. + 0.8 * obs_history[:,-2,0] - 1.5 * reward_history[:,-1]
-                            elif dropout_obs_count_thres == 5:
-                                logit = intercept - 1.2 + 0.8 * obs_history[:,-2,0] - 1.5 * reward_history[:,-1]
-                            elif dropout_obs_count_thres == 4:
-                                logit = intercept - 0.9 + 0.8 * obs_history[:,-2,0] - 1.5 * reward_history[:,-1]
-                            elif dropout_obs_count_thres == 3:
-                                logit = intercept - 0.6 + 0.8 * obs_history[:,-2,0] - 1.5 * reward_history[:,-1]
-                            elif dropout_obs_count_thres == 2:
-                                logit = intercept - 0.2 + 0.8 * obs_history[:,-2,0] - 1.5 * reward_history[:,-1]
-                        else:
-                            raise NotImplementedError
+                if T == 25:
+                    if dropout_rate == 0.6:
+                        logit = intercept + 7.0 + 0.8 * obs_history[:, -2,0] - 1.5 * reward_history[:,-1]
+                        logit = intercept + 5.0 + 0.8 * obs_history[:, -2,0] - 1.5 * reward_history[:,-1]
+                    elif dropout_rate == 0.8:
+                        logit = intercept + 3.6 + 0.8 * obs_history[:, -2,0] - 1.5 * reward_history[:,-1]
+                    elif dropout_rate == 0.9:
+                        if dropout_obs_count_thres == 5:
+                            logit = intercept + 2.4 + 0.8 * obs_history[:,-2,0] - 1.5 * reward_history[:, -1]
+                        elif dropout_obs_count_thres == 2:
+                            logit = intercept + 3.2 + 0.8 * obs_history[:,-2,0] - 1.5 * reward_history[:,-1]
+                        elif dropout_obs_count_thres == 1:
+                            logit = intercept + 4 + 0.8 * obs_history[:,-2,0] - 1.5 * reward_history[:,-1]
+                    else:
+                        raise NotImplementedError
+                elif T == 10:
+                    if dropout_rate == 0.6:
+                        if dropout_obs_count_thres == 5:
+                            logit = intercept + 2 + 0.8 * obs_history[:,-2,0] - 1.5 * reward_history[:,-1]
+                        elif dropout_obs_count_thres == 3:
+                            logit = intercept + 3 + 0.8 * obs_history[:,-2,0] - 1.5 * reward_history[:,-1]
+                        elif dropout_obs_count_thres == 2:
+                            logit = intercept + 4 + 0.8 * obs_history[:,-2,0] - 1.5 * reward_history[:,-1]
+                    elif dropout_rate == 0.7:
+                        logit = intercept + 0. + 0.8 * obs_history[:, -2,0] - 1.5 * reward_history[:,-1]
+                    elif dropout_rate == 0.8:
+                        logit = intercept - 0.8 + 0.8 * obs_history[:, -2,0] - 1.5 * reward_history[:,-1]
+                    elif dropout_rate == 0.9:
+                        if dropout_obs_count_thres == 6:
+                            logit = intercept - 2. + 0.8 * obs_history[:,-2,0] - 1.5 * reward_history[:,-1]
+                        elif dropout_obs_count_thres == 5:
+                            logit = intercept - 1.2 + 0.8 * obs_history[:,-2,0] - 1.5 * reward_history[:,-1]
+                        elif dropout_obs_count_thres == 4:
+                            logit = intercept - 0.9 + 0.8 * obs_history[:,-2,0] - 1.5 * reward_history[:,-1]
+                        elif dropout_obs_count_thres == 3:
+                            logit = intercept - 0.6 + 0.8 * obs_history[:,-2,0] - 1.5 * reward_history[:,-1]
+                        elif dropout_obs_count_thres == 2:
+                            logit = intercept - 0.2 + 0.8 * obs_history[:,-2,0] - 1.5 * reward_history[:,-1]
                     else:
                         raise NotImplementedError
                 else:
-                    logit = intercept + 6.5 + 1. * obs_history[:, -2,0] - 4.5 * reward_history[:,-1]
+                    raise NotImplementedError
                 prob = 1 / (np.exp(logit) + 1)
             elif dropout_scheme == '3.19-mar':
-                if not scale_state:
-                    if T == 25:
-                        if dropout_rate == 0.6:
-                            logit = intercept + 4.5 + 0.8 * obs_history[:, -2,0] - 1.5 * reward_history[:,-2]
-                        elif dropout_rate == 0.7:
-                            logit = intercept + 3.2 + 0.8 * obs_history[:, -2,0] - 1.5 * reward_history[:,-2]
-                        elif dropout_rate == 0.8:
-                            logit = intercept + 2.5 + 0.8 * obs_history[:, -2,0] - 1.5 * reward_history[:,-2]
-                        elif dropout_rate == 0.9:
-                            if dropout_obs_count_thres == 5:
-                                logit = intercept + 1.5 + 0.8 * obs_history[:,-2,0] - 1.5 * reward_history[:,-2]
-                            elif dropout_obs_count_thres == 2:
-                                logit = intercept + 2.3 + 0.8 * obs_history[:,-2,0] - 1.5 * reward_history[:,-2]
-                            elif dropout_obs_count_thres == 1:
-                                logit = intercept + 2.8 + 0.8 * obs_history[:,-2,0] - 1.5 * reward_history[:,-2] 
-                        else:
-                            raise NotImplementedError
-                    elif T == 10:
-                        if dropout_rate == 0.6:
-                            if dropout_obs_count_thres == 5:
-                                logit = intercept + 0. + 0.8 * obs_history[:,-2,0] - 1.5 * reward_history[:,-2]
-                            elif dropout_obs_count_thres == 2:
-                                logit = intercept + 2.5 + 0.8 * obs_history[:,-2,0] - 1.5 * reward_history[:,-2]
-                        elif dropout_rate == 0.7:
-                            logit = intercept - 1. + 0.8 * obs_history[:, -2,0] - 1.5 * reward_history[:,-2]
-                        elif dropout_rate == 0.8:
-                            logit = intercept - 2. + 0.8 * obs_history[:, -2,0] - 1.5 * reward_history[:,-2]
-                        elif dropout_rate == 0.9:
-                            logit = intercept - 3. + 0.8 * obs_history[:, -2,0] - 1.5 * reward_history[:,-2]  
-                        else:
-                            raise NotImplementedError
+                if T == 25:
+                    if dropout_rate == 0.6:
+                        logit = intercept + 4.5 + 0.8 * obs_history[:, -2,0] - 1.5 * reward_history[:,-2]
+                    elif dropout_rate == 0.7:
+                        logit = intercept + 3.2 + 0.8 * obs_history[:, -2,0] - 1.5 * reward_history[:,-2]
+                    elif dropout_rate == 0.8:
+                        logit = intercept + 2.5 + 0.8 * obs_history[:, -2,0] - 1.5 * reward_history[:,-2]
+                    elif dropout_rate == 0.9:
+                        if dropout_obs_count_thres == 5:
+                            logit = intercept + 1.5 + 0.8 * obs_history[:,-2,0] - 1.5 * reward_history[:,-2]
+                        elif dropout_obs_count_thres == 2:
+                            logit = intercept + 2.3 + 0.8 * obs_history[:,-2,0] - 1.5 * reward_history[:,-2]
+                        elif dropout_obs_count_thres == 1:
+                            logit = intercept + 2.8 + 0.8 * obs_history[:,-2,0] - 1.5 * reward_history[:,-2] 
+                    else:
+                        raise NotImplementedError
+                elif T == 10:
+                    if dropout_rate == 0.6:
+                        if dropout_obs_count_thres == 5:
+                            logit = intercept + 0. + 0.8 * obs_history[:,-2,0] - 1.5 * reward_history[:,-2]
+                        elif dropout_obs_count_thres == 2:
+                            logit = intercept + 2.5 + 0.8 * obs_history[:,-2,0] - 1.5 * reward_history[:,-2]
+                    elif dropout_rate == 0.7:
+                        logit = intercept - 1. + 0.8 * obs_history[:, -2,0] - 1.5 * reward_history[:,-2]
+                    elif dropout_rate == 0.8:
+                        logit = intercept - 2. + 0.8 * obs_history[:, -2,0] - 1.5 * reward_history[:,-2]
+                    elif dropout_rate == 0.9:
+                        logit = intercept - 3. + 0.8 * obs_history[:, -2,0] - 1.5 * reward_history[:,-2]  
                     else:
                         raise NotImplementedError
                 else:
-                    logit = intercept + 6.5 + 1. * obs_history[:, -2, 0] - 4.5 * reward_history[:,-2]
+                    raise NotImplementedError
                 prob = 1 / (np.exp(logit) + 1)
             elif dropout_scheme == '3.20':
-                if not scale_state:
-                    if T == 25:
-                        if dropout_rate == 0.6:
-                            logit = intercept + 8 - 0.5 * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-1]
-                        elif dropout_rate == 0.7:
-                            logit = intercept + 5.5 - 0.5 * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-1]
-                        elif dropout_rate == 0.8:
-                            logit = intercept + 4.2 - 0.5 * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:, -1]
-                        elif dropout_rate == 0.9:
-                            if dropout_obs_count_thres == 5:
-                                logit = intercept + 3 - 0.5 * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-1]
-                            elif dropout_obs_count_thres == 2:
-                                logit = intercept + 3.7 - 0.5 * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-1]
-                            elif dropout_obs_count_thres == 1:
-                                logit = intercept + 4.5 - 0.5 * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-1]
-                        else:
-                            raise NotImplementedError
-                    elif T == 10:
-                        if dropout_rate == 0.6:
-                            if dropout_obs_count_thres == 5:
-                                logit = intercept + 1.8 - 1. * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-1]
-                            elif dropout_obs_count_thres == 2:
-                                logit = intercept + 6 - 1. * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-1]
-                        elif dropout_rate == 0.7:
+                if T == 25:
+                    if dropout_rate == 0.6:
+                        logit = intercept + 8 - 0.5 * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-1]
+                    elif dropout_rate == 0.7:
+                        logit = intercept + 5.5 - 0.5 * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-1]
+                    elif dropout_rate == 0.8:
+                        logit = intercept + 4.2 - 0.5 * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:, -1]
+                    elif dropout_rate == 0.9:
+                        if dropout_obs_count_thres == 5:
+                            logit = intercept + 3 - 0.5 * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-1]
+                        elif dropout_obs_count_thres == 2:
+                            logit = intercept + 3.7 - 0.5 * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-1]
+                        elif dropout_obs_count_thres == 1:
+                            logit = intercept + 4.5 - 0.5 * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-1]
+                    else:
+                        raise NotImplementedError
+                elif T == 10:
+                    if dropout_rate == 0.6:
+                        if dropout_obs_count_thres == 5:
+                            logit = intercept + 1.8 - 1. * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-1]
+                        elif dropout_obs_count_thres == 2:
+                            logit = intercept + 6 - 1. * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-1]
+                    elif dropout_rate == 0.7:
+                        logit = intercept + 0.5 - 1. * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-1]
+                    elif dropout_rate == 0.8:
+                        logit = intercept - 0.5 - 1. * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-1]
+                        if dropout_obs_count_thres == 6:
+                            logit = intercept - 2. - 1. * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-1]
+                        elif dropout_obs_count_thres == 5:
+                            logit = intercept - 1. - 1. * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-1]
+                        elif dropout_obs_count_thres == 4:
+                            logit = intercept - 0.4 - 1. * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-1]
+                        elif dropout_obs_count_thres == 3:
+                            logit = intercept - 0. - 1. * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-1]
+                        elif dropout_obs_count_thres == 2:
+                            logit = intercept + 0.2 - 1. * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-1]
+                        elif dropout_obs_count_thres == 1:
                             logit = intercept + 0.5 - 1. * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-1]
-                        elif dropout_rate == 0.8:
-                            logit = intercept - 0.5 - 1. * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-1]
-                            if dropout_obs_count_thres == 6:
-                                logit = intercept - 2. - 1. * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-1]
-                            elif dropout_obs_count_thres == 5:
-                                logit = intercept - 1. - 1. * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-1]
-                            elif dropout_obs_count_thres == 4:
-                                logit = intercept - 0.4 - 1. * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-1]
-                            elif dropout_obs_count_thres == 3:
-                                logit = intercept - 0. - 1. * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-1]
-                            elif dropout_obs_count_thres == 2:
-                                logit = intercept + 0.2 - 1. * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-1]
-                            elif dropout_obs_count_thres == 1:
-                                logit = intercept + 0.5 - 1. * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-1]
-                        else:
-                            raise NotImplementedError
                     else:
                         raise NotImplementedError
                 else:
-                    logit = intercept + 6.5 + 0.5 * np.power(
-                        obs_history[:, -2, 0], 2) - 4.5 * reward_history[:, -1]
+                    raise NotImplementedError
                 prob = 1 / (np.exp(logit) + 1)
             elif dropout_scheme == '3.20-mar':
-                if not scale_state:
-                    if T == 25:
-                        if dropout_rate == 0.6:
-                            logit = intercept + 8 - 0.5 * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-2]
-                        elif dropout_rate == 0.7:
-                            logit = intercept + 5.5 - 0.5 * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-2]
-                        elif dropout_rate == 0.8:
-                            logit = intercept + 4.2 - 0.5 * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-2]
-                        elif dropout_rate == 0.9:
-                            if dropout_obs_count_thres == 5:
-                                logit = intercept + 3 - 0.5 * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-2]
-                            elif dropout_obs_count_thres == 2:
-                                logit = intercept + 3.7 - 0.5 * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-2]
-                            elif dropout_obs_count_thres == 1:
-                                logit = intercept + 4.5 - 0.5 * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-2]
-                        else:
-                            raise NotImplementedError
-                    elif T == 10:
-                        if dropout_rate == 0.6:
-                            if dropout_obs_count_thres == 5:
-                                logit = intercept + 1.3 - 1. * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-2]
-                            elif dropout_obs_count_thres == 2:
-                                logit = intercept + 6 - 1. * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-2]
-                        elif dropout_rate == 0.7:
-                            logit = intercept + 0.5 - 1. * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-2]
-                        elif dropout_rate == 0.8:
-                            logit = intercept - 0.5 - 1. * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-2]
-                        elif dropout_rate == 0.9:
-                            logit = intercept - 2. - 1. * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-2]
-                        else:
-                            raise NotImplementedError
+                if T == 25:
+                    if dropout_rate == 0.6:
+                        logit = intercept + 8 - 0.5 * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-2]
+                    elif dropout_rate == 0.7:
+                        logit = intercept + 5.5 - 0.5 * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-2]
+                    elif dropout_rate == 0.8:
+                        logit = intercept + 4.2 - 0.5 * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-2]
+                    elif dropout_rate == 0.9:
+                        if dropout_obs_count_thres == 5:
+                            logit = intercept + 3 - 0.5 * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-2]
+                        elif dropout_obs_count_thres == 2:
+                            logit = intercept + 3.7 - 0.5 * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-2]
+                        elif dropout_obs_count_thres == 1:
+                            logit = intercept + 4.5 - 0.5 * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-2]
+                    else:
+                        raise NotImplementedError
+                elif T == 10:
+                    if dropout_rate == 0.6:
+                        if dropout_obs_count_thres == 5:
+                            logit = intercept + 1.3 - 1. * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-2]
+                        elif dropout_obs_count_thres == 2:
+                            logit = intercept + 6 - 1. * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-2]
+                    elif dropout_rate == 0.7:
+                        logit = intercept + 0.5 - 1. * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-2]
+                    elif dropout_rate == 0.8:
+                        logit = intercept - 0.5 - 1. * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-2]
+                    elif dropout_rate == 0.9:
+                        logit = intercept - 2. - 1. * np.power(obs_history[:, -2, 0], 2) - 1.5 * reward_history[:,-2]
                     else:
                         raise NotImplementedError
                 else:
-                    logit = intercept + 6.5 + 0.5 * np.power(
-                        obs_history[:, -2, 0], 2) - 4.5 * reward_history[:, -2]
+                    raise NotImplementedError
                 prob = 1 / (np.exp(logit) + 1)
             else:
                 raise NotImplementedError
@@ -550,9 +506,11 @@ if __name__ == '__main__':
             return np.zeros(shape=(obs_history.shape[0], 1))
 
     # specify environment
-    if env_class.lower() == 'linear2d' and vectorize_env:
+    if env_class.lower() in ['linear2d', 'save'] and vectorize_env:
         num_actions = 2
         state_dim = 2
+        low = -norm.ppf(0.999)  # -np.inf
+        high = norm.ppf(0.999)  # np.inf
         
         env_kwargs = {
             'dim': state_dim,
@@ -579,54 +537,37 @@ if __name__ == '__main__':
         raise NotImplementedError
 
     # specify policy
-    if env_class.lower() in ['linear2d', 'save'] and scale_state:
-        action_thres = 0.5
-
+    if env_class.lower() == 'save':
         def target_policy(S):
-            if S[0] > action_thres and S[1] > action_thres:
-                return [0., 1.]
+            if S[0] > 0 and S[1] > 0:
+                return [1, 0]
             else:
-                return [1., 0.]
+                return [0, 1]
 
         def vec_target_policy(S):
             if len(S.shape) == 1:
                 S = S.reshape(1, -1)
             return np.where(
-                ((S[:, 0] > action_thres) & (S[:, 1] > action_thres)).reshape(
-                    -1, 1), np.repeat([[0., 1.]], repeats=S.shape[0], axis=0),
-                np.repeat([[1., 0.]], repeats=S.shape[0], axis=0))
-    else:
-        if env_class.upper() == 'SAVE':
-            def target_policy(S):
-                if S[0] > 0 and S[1] > 0:
-                    return [1, 0]
-                else:
-                    return [0, 1]
+                ((S[:, 0] > 0) & (S[:, 1] > 0)).reshape(-1, 1),
+                np.repeat([[1, 0]], repeats=S.shape[0], axis=0),
+                np.repeat([[0, 1]], repeats=S.shape[0], axis=0))
+    # target policy used in our paper
+    elif env_class.lower() == 'linear2d':
+        def target_policy(S):
+            if S[0] + S[1] > 0:
+                return [0, 1]
+            else:
+                return [1, 0]
 
-            def vec_target_policy(S):
-                if len(S.shape) == 1:
-                    S = S.reshape(1, -1)
-                return np.where(
-                    ((S[:, 0] > 0) & (S[:, 1] > 0)).reshape(-1, 1),
-                    np.repeat([[1, 0]], repeats=S.shape[0], axis=0),
-                    np.repeat([[0, 1]], repeats=S.shape[0], axis=0))
-        # target policy used in our paper
-        elif env_class.lower() == 'linear2d':
-            def target_policy(S):
-                if S[0] + S[1] > 0:
-                    return [0, 1]
-                else:
-                    return [1, 0]
+        def vec_target_policy(S):
+            if len(S.shape) == 1:
+                S = S.reshape(1, -1)
+            return np.where(
+                (S[:, 0] + S[:, 1] > 0).reshape(-1, 1),
+                np.repeat([[0, 1]], repeats=S.shape[0], axis=0),
+                np.repeat([[1, 0]], repeats=S.shape[0], axis=0))
 
-            def vec_target_policy(S):
-                if len(S.shape) == 1:
-                    S = S.reshape(1, -1)
-                return np.where(
-                    (S[:, 0] + S[:, 1] > 0).reshape(-1, 1),
-                    np.repeat([[0, 1]], repeats=S.shape[0], axis=0),
-                    np.repeat([[1, 0]], repeats=S.shape[0], axis=0))
-
-        policy = vec_target_policy if vectorize_env else target_policy
+    policy = vec_target_policy if vectorize_env else target_policy
 
     ## eval_S_inits
     np.random.seed(seed=eval_seed)

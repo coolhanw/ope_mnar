@@ -64,10 +64,10 @@ parser.add_argument('--exclude_icu_morta',
                     default=False)
 parser.add_argument('--use_complete_trajs',
                     type=lambda x: (str(x).lower() == 'true'),
-                    default=False)
+                    default=True)
 parser.add_argument('--apply_custom_dropout',
                     type=lambda x: (str(x).lower() == 'true'),
-                    default=False)
+                    default=True)
 parser.add_argument('--casewise_downsampling',
                     type=lambda x: (str(x).lower() == 'true'),
                     default=False)
@@ -998,11 +998,11 @@ if __name__ == '__main__':
             mimic_ope.train_dropout_model(
                 model_type=dropout_model_type,
                 missing_mechanism=missing_mechanism,
-                train_ratio=0.8,
+                train_ratio=1 if mimic_ope.dropout_rate < 0.3 else 0.8, # 0.8,
                 scale_obs=True, # True, False
                 dropout_obs_count_thres=dropout_obs_count_thres,
                 export_dir=export_dir,
-                pkl_filename=f"sepsis_mnar_dropout_model_T{T}_n{n_traj}.pkl",
+                pkl_filename=f"sepsis_{missing_mechanism}_dropout_model_T{T}_n{n_traj}.pkl",
                 seed=seed,
                 include_reward=include_reward,
                 instrument_var_index=mnar_instrument_var_index,
