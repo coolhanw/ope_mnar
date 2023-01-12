@@ -25,7 +25,7 @@ class QNetwork(nn.Module):
         layers = []
 
         # input layer
-        input_layer = nn.Linear(in_features=self.input_dim,
+        input_layer = nn.Linear(in_features=state_dim,
                                 out_features=hidden_sizes[0])
         nn.init.xavier_normal_(input_layer.weight)
         nn.init.zeros_(input_layer.bias)

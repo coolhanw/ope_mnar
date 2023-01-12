@@ -70,7 +70,8 @@ if __name__ == '__main__':
 
     ## selected features
     # features_cols.remove('re_admission') # 're_admission' are all 0's
-    features_cols = ['Arterial_pH','SpO2','Temp_C','Chloride','Hb','INR','age','PT','HR','Arterial_BE','Ionised_Ca','Calcium','Arterial_lactate'] + ['SOFA'] # 14 features
+    # features_cols = ['Arterial_pH','SpO2','Temp_C','Chloride','Hb','INR','age','PT','HR','Arterial_BE','Ionised_Ca','Calcium','Arterial_lactate'] + ['SOFA'] # 14 features
+    features_cols = ['Arterial_pH','SpO2','Temp_C','Chloride','Hb','INR','age','PT','HR','Arterial_BE','Ionised_Ca','Calcium','Arterial_lactate','SOFA','RR'] # 15 features
     static_features = [f for f in features_cols if f in set(['gender', 'age', 'Weight_kg', 're_admission'])]
     dynamic_features = [f for f in features_cols if f not in static_features]
     features_cols = static_features + dynamic_features # should keep this order in all downstream analysis
