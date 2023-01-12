@@ -535,8 +535,10 @@ if __name__ == '__main__':
     ########################################################################
     ##                    specify features
     ########################################################################
+    # selected_features = ['Arterial_pH', 'SpO2', 'Temp_C', 'Chloride', 'Hb', 'INR', 'age',
+    #                      'PT', 'HR', 'Arterial_BE', 'Ionised_Ca', 'Calcium', 'Arterial_lactate'] + ['SOFA']  # 14 features
     selected_features = ['Arterial_pH', 'SpO2', 'Temp_C', 'Chloride', 'Hb', 'INR', 'age',
-                         'PT', 'HR', 'Arterial_BE', 'Ionised_Ca', 'Calcium', 'Arterial_lactate'] + ['SOFA']  # 14 features
+                         'PT', 'HR', 'Arterial_BE', 'Ionised_Ca', 'Calcium', 'Arterial_lactate', 'SOFA', 'RR']  # 15 features
     static_features = [f for f in selected_features if f in set(
         ['gender', 'age', 'Weight_kg', 're_admission'])]
     dynamic_features = [
@@ -1026,7 +1028,6 @@ if __name__ == '__main__':
             # estimate beta
             print("start updating Q-function for target policy...")
             mimic_ope._beta_hat(policy=target_policy,
-                                block=False,
                                 ipw=ipw,
                                 estimate_missing_prob=estimate_missing_prob,
                                 weight_curr_step=weight_curr_step,
@@ -1035,7 +1036,6 @@ if __name__ == '__main__':
                                 grid_search=False,
                                 verbose=True,
                                 subsample_index=None)
-            mimic_ope._store_para(mimic_ope.est_beta)
 
             print("end updating...")
             env.close()
@@ -1048,7 +1048,6 @@ if __name__ == '__main__':
             # make inference
             V_int_summary = mimic_ope.inference_int(policy=target_policy,
                                                     alpha=0.05,
-                                                    block=False,
                                                     ipw=ipw,
                                                     estimate_missing_prob=estimate_missing_prob,
                                                     weight_curr_step=True,

@@ -65,17 +65,9 @@ class SimulationBase(object):
                     (self.env.single_action_space, ) * self.env.num_envs)
                 self.num_actions = self.env.single_action_space.n # the number of candidate discrete actions
                 self.state_dim = self.env.single_observation_space.shape[0]
-                # store the last observation which is particularly designed for append block to make 
-                # sure that the append block's first state can match the last state in current buffer
-                self.last_obs = self.env.observation_space.sample()
             else:
                 self.num_actions = self.env.action_space.n # the number of candidate discrete actions
                 self.state_dim = self.env.observation_space.shape[0]
-                # store the last observation which is particularly designed for append block to make 
-                # sure that the append block's first state can match the last state in current buffer
-                self.last_obs = np.vstack([
-                    self.env.observation_space.sample() for _ in range(self.n)
-                ])
 
         self.low = np.array([np.inf] * self.state_dim) # initial values, will be updated when generating trajectories
         self.high = np.array([-np.inf] * self.state_dim) # initial values, will be updated when generating trajectories
@@ -494,12 +486,15 @@ class SimulationBase(object):
         self.dropout_rate = incomplete_cnt / self.n
         self.missing_rate = 1 - self.total_N / (self.n * self.max_T)
         initial_obs = []
+        initial_actions = []
         all_obs = []
         for k in self.masked_buffer.keys():
             initial_obs.append(self.masked_buffer[k][0][0])
+            initial_actions.append(self.masked_buffer[k][1][0])
             all_obs.append(self.masked_buffer[k][0])
         
         self._initial_obs = np.vstack(initial_obs)
+        self._initial_actions = np.array(initial_actions)
         self._obs = np.vstack(all_obs)
 
     def export_buffer(self):
@@ -577,7 +572,6 @@ class SimulationBase(object):
         self._df = data
         self.num_actions = data[action_col].nunique()
         self.state_dim = len(state_cols)
-        self.last_obs = None
         self.burn_in = burn_in
         if subsample_id is None:
             id_list = data[id_col].unique().tolist()
@@ -591,6 +585,7 @@ class SimulationBase(object):
         incomplete_cnt = 0
         self.total_N = 0
         self._initial_obs = []
+        self._initial_actions = []
         if 'custom_dropout_prob' not in data.columns and dropout_col in data.columns:
             print(f'use column {dropout_col} as dropout indicator')
         for i, id_ in enumerate(id_list):
@@ -598,6 +593,7 @@ class SimulationBase(object):
             S_traj = tmp[state_cols].values
             self._initial_obs.append(S_traj[0])
             A_traj = tmp[action_col].values
+            self._initial_actions.append(A_traj[0])
             reward_traj = tmp[reward_col].values
             if reward_transform is not None:
                 reward_traj = reward_transform(reward_traj)
@@ -693,6 +689,7 @@ class SimulationBase(object):
         self.dropout_rate = incomplete_cnt / self.n
         self.missing_rate = 1 - self.total_N / (self.n * self.max_T)
         self._initial_obs = np.array(self._initial_obs)
+        self._initial_actions = np.array(self._initial_actions)
         print('Import finished!')
 
     def import_holdout_buffer(self,
@@ -1071,6 +1068,7 @@ class SimulationBase(object):
             bandwidth_factor (float): the constant used in bandwidth calculation
             kwargs (dict): passed to model
         """
+        assert missing_mechanism is not None, "please specify missing_mechanism as either 'mar' or 'mnar'."
         self.missing_mechanism = missing_mechanism
         self.dropout_obs_count_thres = max(dropout_obs_count_thres - 1, 0)  # -1 because this is the index
         self._include_reward = include_reward
@@ -1141,7 +1139,9 @@ class SimulationBase(object):
                 reward_list.append(
                     R_traj[self.dropout_obs_count_thres:T].reshape(-1,
                                                                    1))  # R_{t}
-
+            else:
+                T = self.max_T
+            
             action_list.append(A_traj[self.dropout_obs_count_thres:T].reshape(
                 -1, 1))
             dropout_next_list.append(
@@ -2019,7 +2019,7 @@ class SimulationBase(object):
                 true_Q_avg = true_Q.mean(axis=1).tolist()
                 true_Q_dict[a] = true_Q_avg
 
-            # recover num_envs
+            # recover eval_env
             self.eval_env.T = old_horizon
             self.eval_env.num_envs = old_num_envs
             self.eval_env.observation_space = batch_space(
@@ -2108,7 +2108,120 @@ class SimulationBase(object):
                 S_inits = S_inits_sample
             return S_inits, true_value_avg, true_Q_dict
 
-    def get_target_value(self, target_policy, S_inits=None, MC_size=None):
+    def evaluate_policy(self,
+                        policy,
+                        eval_size=20,
+                        eval_horizon=None,
+                        seed=None,
+                        S_inits=None,
+                        mask_unobserved=True):
+        """
+        Evaluate given policy using Monte Carlo approximation
+
+        Args:
+            policy (callable): target policy to be evaluated
+            eval_size (int): Monte Carlo size to estimate point-wise value
+            seed (int): random seed passed to gen_single_traj() or gen_batch_trajs()
+            S_inits (np.ndarray): initial states for policy evaluation
+            mask_unobserved (bool): if True, mask unobserved states
+
+        Returns:
+            true_V (list): true value for each state
+            action_percent: percentage of action=1 (only apply for binary action)
+            est_V (list): estimated value for each state
+            proportion of value within the bounds (float)
+        """
+        if not self.vectorized_env:
+            true_V = []
+
+            if S_inits is not None and np.shape(S_inits) == (self.env.dim, ):
+                S_inits = np.tile(A=S_inits, reps=(eval_size, 1))
+            if S_inits is not None:
+                eval_size = len(S_inits)
+            
+            # reset eval_env
+            old_horizon = self.eval_env.T
+            if eval_horizon is not None:
+                self.eval_env.T = eval_horizon
+            # evaluation on n subjects
+            for i in range(eval_size):
+                trajectories = self.gen_single_traj(
+                    policy=policy,
+                    seed=seed,
+                    S_init=S_inits[i] if S_inits is not None else None,
+                    evaluation=True)
+                S, A, reward, T = trajectories[:4]
+                est_true_Value = sum(
+                    np.array([self.gamma**j
+                              for j in range(T)]) * np.array(reward))
+                true_V.append(est_true_Value)
+            
+            # recover eval_env
+            self.eval_env.T = old_horizon
+            
+            return np.mean(true_V) #, est_V
+        else:
+            if S_inits is not None and np.shape(S_inits) == (self.env.dim, ):
+                S_inits = np.tile(A=S_inits, reps=(eval_size, 1))
+            if S_inits is not None:
+                eval_size = len(S_inits)
+            
+            old_num_envs = self.eval_env.num_envs
+            old_horizon = self.eval_env.T
+            # reset eval_env
+            if eval_horizon is not None:
+                self.eval_env.T = eval_horizon
+            self.eval_env.num_envs = eval_size
+            self.eval_env.observation_space = batch_space(
+                self.eval_env.single_observation_space,
+                n=self.eval_env.num_envs)
+            self.eval_env.action_space = Tuple(
+                (self.eval_env.single_action_space, ) * self.eval_env.num_envs)
+
+            trajectories = self.gen_batch_trajs(
+                policy=policy,
+                seed=seed,
+                S_inits=S_inits if S_inits is not None else None,
+                evaluation=True)
+            S, A, reward, T = trajectories[:4]
+            # set unobserved (mask=0) reward to 0
+            if mask_unobserved:
+                rewards_history = self.eval_env.rewards_history * self.eval_env.states_history_mask[:, :self.eval_env.rewards_history.shape[1]]
+            else:
+                rewards_history = self.eval_env.rewards_history
+            # recover eval_env
+            self.eval_env.T = old_horizon
+            self.eval_env.num_envs = old_num_envs
+            self.eval_env.observation_space = batch_space(
+                self.eval_env.single_observation_space,
+                n=self.eval_env.num_envs)
+            self.eval_env.action_space = Tuple(
+                (self.eval_env.single_action_space, ) * self.eval_env.num_envs)
+
+            true_value = np.matmul(
+                rewards_history,
+                self.gamma**np.arange(start=0,
+                                      stop=rewards_history.shape[1]).reshape(
+                                          -1, 1))
+            true_V = true_value.squeeze().tolist()
+
+            return np.mean(true_V)
+
+    def get_state_values(self, target_policy, S_inits=None, MC_size=None):
+        """Wrapper function of V
+        
+        Args:
+            target_policy (callable): target policy to be evaluated.
+            S_inits (np.ndarray): initial states for policy evaluation. If both S_inits and MC_size are not 
+                specified, use initial observations from data.
+            MC_size (int): sample size for Monte Carlo approximation.
+
+        Returns:
+            est_V (np.ndarray): value of target policy for each state
+        """
+        raise NotImplementedError
+
+    def get_value(self, target_policy, S_inits=None, MC_size=None):
         """Wrapper function of V_int
         
         Args:

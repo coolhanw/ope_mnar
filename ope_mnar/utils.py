@@ -78,7 +78,7 @@ class iden():
 
 
 class MinMaxScaler():
-    """Transform the state onto [0,1] using min and max value."""
+    """Transform the features onto [0,1] using min and max value."""
 
     def __init__(self, min_val=None, max_val=None):
         self.data_min_ = min_val
@@ -1473,7 +1473,7 @@ class DiscretePolicy():
         action = self.policy_func(states)
         if action.shape[1] > 1:
             return action
-        return np.eye(self.num_actions)[action]
+        return np.eye(self.num_actions)[action].astype('float')
     
     def get_action(self, states):
         action = self.policy_func(states)
@@ -1484,31 +1484,3 @@ class DiscretePolicy():
         assert action.shape[1] == self.num_actions
         action = (action.cumsum(axis=1) > np.random.rand(action.shape[0])[:, np.newaxis]).argmax(axis=1)
         return action
-
-# the following functions will be useful for policy optimization
-
-def get_next_block_idx(current_block_idx, K_n, K_T):
-    n, t = current_block_idx
-    if n < K_n: return [n + 1, t]
-    else:
-        if t < K_T:
-            return [1, t + 1]
-        else:
-            return None
-
-
-def get_idx_pos(current_block_idx, n, T, n_min, T_min):
-    """given the current block index return the corresponding position"""
-    K_n = n // n_min
-    K_T = T // T_min
-    k_n, k_T = current_block_idx
-    if k_n < K_n:
-        if k_T < K_T:
-            return (k_n - 1) * n_min, (k_n) * n_min, T_min
-        else:
-            return (k_n - 1) * n_min, (k_n) * n_min, T_min + T - K_T * T_min
-    else:
-        if k_T < K_T:
-            return (k_n - 1) * n_min, n, T_min
-        else:
-            return (k_n - 1) * n_min, n, T_min + T - K_T * T_min

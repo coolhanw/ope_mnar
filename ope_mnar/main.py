@@ -27,9 +27,6 @@ def train_Q_func(
         total_N=None,
         burn_in=0,
         use_vector_env=True,
-        iterative=False,
-        error_bound=0.005,
-        max_itr=50,
         target_policy=None,
         export_dir=None,
         scale='NormCdf',
@@ -47,7 +44,6 @@ def train_Q_func(
         mnar_y_transform=None,
         gamma_init=None,
         bandwidth_factor=1.5,
-        drop_last_TD=True,
         ridge_factor=0.,
         grid_search=False,
         basis_scale_factor=1.,
@@ -58,7 +54,6 @@ def train_Q_func(
         prob_lbound=1e-3,
         eval_env=None,
         filename_data=None,
-        filename_log=None,
         filename_train=None,
         **kwargs):
     """
@@ -73,9 +68,6 @@ def train_Q_func(
         total_N (int): total number of state-action pairs
         burn_in (int): length of burn-in period
         use_vector_env (bool): if True, use vectoried environment. This can accelerate the calculation.
-        iterative (bool): if True, use iterative approach to solve for beta
-        error_bound (float): error threshold to terminate iteration (only applies to iterative approach). default is 0.005,
-        max_itr (int): maximum number of iteration (only applies to iterative approach)
         target_policy (callable): target policy to be evaluated
         export_dir (str): directory to export results
         scale (str): scaler to transform state features onto [0,1], 
@@ -94,7 +86,6 @@ def train_Q_func(
         mnar_y_transform (callable): input next_obs and reward, output Y term for the mnar dropout model
         gamma_init (float): initial value for gamma in MNAR estimation
         bandwidth_factor (float): the constant used in bandwidth calculation
-        drop_last_TD (bool): if True, drop the temporal difference error at the terminal step
         ridge_factor (float): ridge penalty parameter
         grid_search (bool): if True, use grid search to select the optimal ridge_factor
         basis_scale_factor (float): a multiplier to basis in order to avoid extremely small value
@@ -104,7 +95,6 @@ def train_Q_func(
         prob_lbound (float): lower bound of dropout/survival probability to avoid extreme inverse weight
         eval_env (gym.Env): dynamic environment to evaluate the policy, if not specified, use env
         filename_data (str): path to the observed data (csv file)
-        filename_log (str): path to the training log (Deprecated)
         filename_train (str): path to the training results
         kwargs: additional inputs passed to the environment
 
@@ -185,55 +175,25 @@ def train_Q_func(
             gamma_init=gamma_init, 
             bandwidth_factor=bandwidth_factor,
             verbose=True)
+        print('Start estimating dropout probability...')
         agent.estimate_missing_prob(missing_mechanism=missing_mechanism)
         fit_dropout_end = time.time()
         print(f'Finished! {fit_dropout_end-fit_dropout_start} secs elapsed.')
 
     # estimate beta
-    error = 1
-    terminate_loop = 0
     print("start updating Q-function for target policy...")
-    if iterative:
-        logger.add_output(
-            dowel.CsvOutput(file_name=os.path.join(export_dir, filename_log)))
-        while error > error_bound and terminate_loop < max_itr:
-            logger.push_prefix('itr {}'.format(terminate_loop))
+    agent._beta_hat(policy=target_policy,
+                    ipw=ipw,
+                    estimate_missing_prob=estimate_missing_prob,
+                    weight_curr_step=weight_curr_step,
+                    prob_lbound=prob_lbound,
+                    ridge_factor=ridge_factor,
+                    grid_search=grid_search,
+                    verbose=True,
+                    subsample_index=None)
 
-            output = agent.evaluate_policy(policy=target_policy, eval_size=10)
-            tabular.record('Evaluation/Value', np.mean(output[0]))
-
-            agent._stretch_para()
-            tmp = agent.all_para
-            agent.update_op_policy(policy=target_policy,
-                                   ipw=ipw,
-                                   estimate_missing_prob=estimate_missing_prob,
-                                   drop_last_TD=drop_last_TD,
-                                   prob_lbound=prob_lbound)
-            agent._stretch_para()
-            error = np.sqrt(np.mean((tmp - agent.all_para)**2))
-            terminate_loop += 1
-            print("current error is %.4f, error bound is %.4f" %
-                  (error, error_bound))
-            tabular.record('Error', error)
-            logger.log(tabular)
-            logger.pop_prefix()
-            logger.dump_all()
-        logger.remove_all()
-    else:
-        agent._beta_hat(policy=target_policy,
-                        block=False,
-                        ipw=ipw,
-                        estimate_missing_prob=estimate_missing_prob,
-                        weight_curr_step=weight_curr_step,
-                        prob_lbound=prob_lbound,
-                        ridge_factor=ridge_factor,
-                        grid_search=grid_search,
-                        verbose=True,
-                        subsample_index=None)
-        agent._store_para(agent.est_beta)
-        error = 0 # converge by default
-        if grid_search:
-            print(agent._ridge_param_cv)
+    if grid_search:
+        print(agent._ridge_param_cv)
 
     print("end updating...")
 
@@ -286,7 +246,6 @@ def train_Q_func(
             }, outfile_train)
     del agent
     _ = gc.collect()
-    return error < 0.5 # converged or not
 
 def get_target_value_multi(T=25,
                           n=500,
@@ -530,6 +489,10 @@ def eval_V_int_CI_multi(
     # make sure alpha is a list of significance levels
     if not hasattr(alpha_list, '__iter__'):
         alpha_list = list(alpha_list)
+    if missing_mechanism is None:
+        # no missingness, hence no need of adjustment
+        ipw = False
+        estimate_missing_prob = False
 
     if env is None:
         if use_vector_env:
@@ -702,7 +665,6 @@ def eval_V_int_CI_multi(
                 inference_dict = agent.inference_int(
                     policy=target_policy,
                     alpha=sig_level,
-                    block=False,
                     ipw=ipw,
                     estimate_missing_prob=estimate_missing_prob,
                     weight_curr_step=weight_curr_step,
@@ -839,6 +801,10 @@ def eval_V_int_CI_bootstrap_multi(
     # make sure alpha is a list of significance levels
     if not hasattr(alpha_list, '__iter__'):
         alpha_list = list(alpha_list)
+    if missing_mechanism is None:
+        # no missingness, hence no need of adjustment
+        ipw = False
+        estimate_missing_prob = False
 
     if env is None:
         if use_vector_env:
@@ -1013,7 +979,6 @@ def eval_V_int_CI_bootstrap_multi(
                 inference_dict = agent.inference_int(
                     policy=target_policy,
                     alpha=sig_level,
-                    block=False,
                     ipw=ipw,
                     estimate_missing_prob=estimate_missing_prob,
                     weight_curr_step=weight_curr_step,
@@ -1073,7 +1038,6 @@ def eval_V_int_CI_bootstrap_multi(
                     verbose=False)
                 agent.estimate_missing_prob(missing_mechanism=missing_mechanism,subsample_index=selected_key)
             agent._beta_hat(policy=target_policy,
-                block=False,
                 ipw=ipw,
                 estimate_missing_prob=estimate_missing_prob,
                 weight_curr_step=weight_curr_step,
@@ -1082,7 +1046,7 @@ def eval_V_int_CI_bootstrap_multi(
                 grid_search=False,
                 verbose=False,
                 subsample_index=selected_key)
-            agent._store_para(agent.est_beta)
+
             for k in eval_S_inits_dict.keys():
                 eval_S_inits = eval_S_inits_dict[k]
                 bootstrap_V_int = agent.V_int(policy=target_policy, MC_size=len(eval_S_inits), S_inits=eval_S_inits)

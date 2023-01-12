@@ -32,7 +32,7 @@ parser.add_argument('--mc_size', type=int, default=250)
 parser.add_argument('--eval_policy_mc_size', type=int,
                     default=10000)  # use 100 for test purpose
 parser.add_argument('--eval_horizon', type=int, default=250)
-parser.add_argument('--dropout_scheme', type=str, default='3.19') 
+parser.add_argument('--dropout_scheme', type=str, default='0') 
 parser.add_argument('--dropout_rate', type=float, default=0.9)
 parser.add_argument('--dropout_obs_count_thres', type=int, default=2)
 parser.add_argument('--ipw',
@@ -643,8 +643,7 @@ if __name__ == '__main__':
             missing_mechanism=missing_mechanism,
             instrument_var_index=instrument_var_index,
             mnar_y_transform=mnar_y_transform,
-            gamma_init=None if missing_mechanism == 'mnar'
-            and not initialize_with_gammaT else gamma_true,
+            gamma_init=None if missing_mechanism == 'mnar' and not initialize_with_gammaT else gamma_true,
             bandwidth_factor=bandwidth_factor,
             value_import_dir=os.path.join(
                 log_dir, f'{env_class}_value_coverage{folder_suffix}'),

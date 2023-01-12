@@ -3,21 +3,37 @@ import pandas as pd
 import os
 import pickle
 import time
+import collections
+from termcolor import colored
 from functools import reduce, partial
 from itertools import product
 from scipy.stats import norm
 from scipy.interpolate import BSpline
 # ML model
 from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.preprocessing import StandardScaler
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 # RL environment
 from gym.spaces import Tuple
 from gym.vector.utils.spaces import batch_space
+# visualization
+import seaborn as sns
+import matplotlib.pyplot as plt
 
-from utils import normcdf, iden, MinMaxScaler
+from utils import normcdf, iden, MinMaxScaler, SimpleReplayBuffer
 from base import SimulationBase
+from batch_rl.dqn import QNetwork
 
+__all__ = ['LSTDQ', 'FQE']
 
 class LSTDQ(SimulationBase):
+    """
+    Shi, Chengchun, et al. "Statistical inference of the value function for reinforcement learning in infinite-horizon settings." 
+    Journal of the Royal Statistical Society. Series B: Statistical Methodology (2021).
+    """
 
     def __init__(self,
                  env=None,
@@ -41,14 +57,12 @@ class LSTDQ(SimulationBase):
             basis_scale_factor (float): a multiplier to basis in order to avoid extremely small value
         """
 
-        super().__init__(
-            env=env, 
-            n=n, 
-            horizon=horizon, 
-            discount=discount, 
-            eval_env=eval_env
-        )
-        
+        super().__init__(env=env,
+                         n=n,
+                         horizon=horizon,
+                         discount=discount,
+                         eval_env=eval_env)
+
         # scaler to transform state features onto [0,1]
         if scale == "NormCdf":
             self.scaler = normcdf()
@@ -63,12 +77,12 @@ class LSTDQ(SimulationBase):
             assert os.path.exists(scale)
             with open(scale, 'rb') as f:
                 self.scaler = pickle.load(f)
-        
-        self.para_dim = None # the dimension of parameter built in basis spline
+
+        self.para_dim = None  # the dimension of parameter built in basis spline
         self.product_tensor = product_tensor
         self.basis_scale_factor = basis_scale_factor
         self.bspline = None
-        self.knot = None # quantile knots for basis spline
+        self.knot = None  # quantile knots for basis spline
 
     def export_buffer(self, eval_Q=False):
         """Convert unscaled trajectories in self.masked_buffer to a dataframe.
@@ -91,7 +105,7 @@ class LSTDQ(SimulationBase):
             tmp['id'] = np.repeat(k, nrows)
             if eval_Q:
                 Q_list = [
-                    self.Q(S=S, A=A, predictor=False, double=True)
+                    self.Q(S=S, A=A, predictor=False)
                     for S, A in zip(nonterminal_state_list, action_list)
                 ]  # same length as action_list
             if len(action_list) < nrows:
@@ -128,7 +142,7 @@ class LSTDQ(SimulationBase):
                 obs_concat.extend(self.masked_buffer[i][0])
         else:
             for i in self.holdout_buffer.keys():
-                obs_concat.extend(self.holdout_buffer[i][0])        
+                obs_concat.extend(self.holdout_buffer[i][0])
         obs_concat = np.array(obs_concat)
         if not hasattr(self.scaler, 'data_min_') or not hasattr(
                 self.scaler, 'data_max_') or np.min(
@@ -190,17 +204,9 @@ class LSTDQ(SimulationBase):
             self.para[i] = np.random.normal(loc=0,
                                             scale=0.1,
                                             size=self.para_dim)
-        self.para_2 = self.para.copy()  # for double Q-learning
-
-    def _stretch_para(self):
-        """Flatten parameters into a vector."""
-        self.all_para = []
-        for i in self.para.values():
-            self.all_para.extend(i)
-        self.all_para = np.array(self.all_para)
 
     ##################################
-    ## calculate Q and value function 
+    ## calculate Q and value function
     ##################################
 
     def _predictor(self, S):
@@ -234,13 +240,13 @@ class LSTDQ(SimulationBase):
                     np.array([func(s) for func in f])
                     for f, s in zip(self.bspline, S)
                 ])  # ((L-d)*S_dim, n)
-            output = output.T # (n, para_dim)
+            output = output.T  # (n, para_dim)
             output *= self.basis_scale_factor
             return output
         else:
             raise NotImplementedError
 
-    def Q(self, S, A, predictor=False, double=False):
+    def Q(self, S, A, predictor=False):
         """
         Return the value of Q-function given states and actions. 
 
@@ -248,7 +254,6 @@ class LSTDQ(SimulationBase):
             S (np.ndarray) : array of states, dimension (n, state_dim)
             A (np.ndarray) : array of actions, dimension (n, )
             predictor (bool) : if True, return the value of each basis function
-            double (bool) : if True, use double Q-functions
 
         Returns:
             Q_est (np.ndarray): Q-function values, dimension (n, )
@@ -263,15 +268,11 @@ class LSTDQ(SimulationBase):
         output = self._predictor(S=S)
         if predictor:
             return output
-        
+
         A = np.array(A).astype(np.int8).squeeze()  # (n,)
         Q_est = np.zeros(shape=(len(output), ))
-        if double:
-            for a in range(self.num_actions):
-                Q_est += np.matmul(output, self.para_2[a]) * (a == A)
-        else:
-            for a in range(self.num_actions):
-                Q_est = Q_est + np.matmul(output, self.para[a]) * (a == A)
+        for a in range(self.num_actions):
+            Q_est = Q_est + np.matmul(output, self.para[a]) * (a == A)
         return Q_est if not scaler_output else Q_est.item()
 
     def V(self, S, policy):
@@ -315,132 +316,12 @@ class LSTDQ(SimulationBase):
             if MC_size is None:
                 S_inits = self._initial_obs
             else:
-                S_inits = self.sample_initial_states(size=MC_size, from_data=True)
+                S_inits = self.sample_initial_states(size=MC_size,
+                                                     from_data=True)
         return np.mean(self.V(policy=policy, S=S_inits))
 
-    def update_op_policy(
-            self,
-            policy,
-            ipw=False,
-            estimate_missing_prob=False,
-            drop_last_TD=True,
-            prob_lbound=1e-3):
-        """Update parameters to estimate Q-function under a fixed policy Q(pi)
-
-        Args:
-            policy (callable): the target policy to evaluate
-            ipw (bool): if True, use inverse weighting to adjust for bias induced by informative dropout
-            estimate_missing_prob (bool): if True, use estimated probability. Otherwise, use ground truth (only for simulation)
-            drop_last_TD (bool): if True, drop the temporal difference error at the terminal step
-            prob_lbound (float): lower bound of survival probability to avoid explosion of inverse weight
-        """
-        if estimate_missing_prob:
-            assert hasattr(
-                self, 'propensity_pred'
-            ), 'please call function self.estimate_missing_prob() first'
-        target_dict, f_dict, ipw_dict = {}, {}, {}
-        total_T = 0
-        obs_list, next_obs_list = [], []
-        action_list, reward_list = [], []
-        surv_prob_list, inverse_wt_list = [], []
-        max_inverse_wt, min_inverse_wt = 0, 100
-        # obtain predictor and reponse
-        for i in self.masked_buffer.keys():
-            S_traj = self.masked_buffer[i][0]
-            A_traj = self.masked_buffer[i][1]
-            reward_traj = self.masked_buffer[i][2]
-            survival_prob = self.masked_buffer[i][4]
-            if len(S_traj) < 2:
-                continue
-            T = S_traj.shape[0] - 1
-            total_T += T
-            obs_list.append(S_traj[:-1])
-            next_obs_list.append(S_traj[1:])
-            action_list.append(A_traj[:T].reshape(-1, 1))
-            reward_list.append(reward_traj[:T].reshape(-1, 1))
-            if estimate_missing_prob:
-                prob = self.propensity_pred[i][1].reshape(-1, 1)
-                assert len(prob) == T
-            else:
-                prob = survival_prob[:T].reshape(-1, 1)
-            surv_prob_list.append(prob)
-            if not ipw:
-                inverse_wt = np.ones(shape=(T, 1))
-            else:
-                inverse_wt = 1 / np.clip(a=prob, a_min=prob_lbound,
-                                         a_max=1)  # bound ipw
-            inverse_wt_list.append(inverse_wt)
-        obs = np.vstack(obs_list)  # (total_T, S_dim)
-        next_obs = np.vstack(next_obs_list)  # (total_T, S_dim)
-        actions = np.vstack(action_list)  # (total_T, 1)
-        rewards = np.vstack(reward_list)  # (total_T, 1)
-        surv_probs = np.vstack(surv_prob_list)  # (total_T, 1)
-        inverse_wts = np.vstack(inverse_wt_list)  # (total_T, 1)
-        policy_next_actions = policy(next_obs)  # (total_T, *)
-        is_stochastic = policy_next_actions.shape[1] > 1
-        f = self._predictor(S=obs)  # (total_T, para_dim)
-        if not is_stochastic:
-            targets = rewards + self.gamma * self.Q(
-                S=next_obs, A=policy_next_actions).reshape(-1, 1)
-        else:
-            targets = rewards
-            for a in range(self.num_actions):
-                targets += self.gamma * policy_next_actions[:, a].reshape(
-                    -1, 1) * self.Q(S=next_obs,
-                                    A=np.tile(a, reps=(total_T, 1))).reshape(
-                                        -1, 1)
-        for a in range(self.num_actions):
-            target_dict[a] = targets[(actions == a).squeeze()].squeeze()
-            f_dict[a] = f[(actions == a).squeeze()]
-            ipw_dict[a] = inverse_wts[(actions == a).squeeze()].squeeze()
-
-        max_inverse_wt = np.max(inverse_wts)
-        min_inverse_wt = np.min(inverse_wts)
-        print('MaxInverseWeight')
-        print(max_inverse_wt)
-        print('MinInverseWeight')
-        print(min_inverse_wt)
-
-        self.para_2 = self.para.copy()
-        for a in range(self.num_actions):
-            reg = LinearRegression(fit_intercept=False)
-            reg.fit(X=np.array(f_dict[a]),
-                    y=np.array(target_dict[a]),
-                    sample_weight=np.array(ipw_dict[a]))
-            self.para[a] = reg.coef_
-
-    def opt_policy(self, S, epsilon=0.0, double=True):
-        """
-        Get the optimal action based on Q-function. 
-
-        Args:
-            S (np.ndarray): array of states, dimension (n, state_dim)
-            epsilon (float): the probability to use random policy for exploration
-
-        Returns:
-            opt_policy (np.ndarray): array of selected optimal actions, dimension (n,)
-        """
-        S = np.array(S)  # (n,S_dim)
-        if len(S.shape) == 1:
-            S = np.expand_dims(S, axis=0)  # (n,S_dim)
-            scaler_output = True
-        else:
-            scaler_output = False
-        Q_vals = np.vstack([
-            self.Q(S=S,
-                   A=np.tile(i, reps=S.shape[0]),
-                   predictor=False,
-                   double=double) for i in range(self.num_actions)
-        ]).T
-        opt_action = np.argmax(Q_vals, axis=1)
-        random_action = np.random.choice(self.num_actions, S.shape[0])
-        opt_policy = np.where(
-            np.random.uniform(0, 1, size=S.shape[0]) < epsilon, random_action,
-            opt_action)
-        return opt_policy.item() if scaler_output else opt_policy
-
     ############################
-    ## inference on beta 
+    ## inference on beta
     ############################
     def _Xi(self, S, A):
         """
@@ -498,7 +379,6 @@ class LSTDQ(SimulationBase):
 
     def _beta_hat(self,
                   policy,
-                  block=False,
                   ipw=False,
                   estimate_missing_prob=False,
                   weight_curr_step=True,
@@ -512,7 +392,6 @@ class LSTDQ(SimulationBase):
 
         Args:
             policy (callable): the target policy to evaluate that outputs actions with dimension (n, *)
-            block (bool): if True, use data in the next block
             ipw (bool): if True, use inverse probability weighting to adjust for missing data
             estimate_missing_prob (bool): if True, use estimated missing probability, otherwise, use ground truth (only for simulation)
             weight_curr_step (bool): if True, use the probability of dropout at current step
@@ -543,12 +422,9 @@ class LSTDQ(SimulationBase):
         surv_prob_list, inverse_wt_list = [], []
         dropout_prob_list = []
         max_inverse_wt = 1
-        min_inverse_wt = 1 / prob_lbound if prob_lbound else 0
-        # timewise_inverse_wt = np.zeros(shape=self.max_T - self.burn_in - 1)
-        if block:
-            training_buffer = self.next_block
-        else:
-            training_buffer = self.masked_buffer
+        min_inverse_wt = 1 / prob_lbound if prob_lbound is not None else 0
+        
+        training_buffer = self.masked_buffer
         keys = training_buffer.keys()
         if subsample_index is not None:
             keys = subsample_index
@@ -594,24 +470,24 @@ class LSTDQ(SimulationBase):
                     inverse_wt = 1 / np.clip(
                         a=prob, a_min=prob_lbound, a_max=1)  # bound ipw
             inverse_wt_list.append(inverse_wt)
-            # timewise_inverse_wt += np.append(
-            #     inverse_wt, [0] * (self.max_T - self.burn_in - 1 - T))
+
         obs = np.vstack(obs_list)  # (total_T, S_dim)
         next_obs = np.vstack(next_obs_list)  # (total_T, S_dim)
         actions = np.vstack(action_list)  # (total_T, 1)
         rewards = np.vstack(reward_list)  # (total_T, 1)
-        inverse_wts = np.vstack(inverse_wt_list)  # (total_T, 1)
-        inverse_wts_mat = np.diag(
-            v=inverse_wts.squeeze()).astype(float)  # (total_T, total_T)
-        Xi_mat = self._Xi(S=obs, A=actions)
+        inverse_wts = np.vstack(inverse_wt_list).astype(float)  # (total_T, 1)
+        del training_buffer
+        print(f'pseudo sample size: {inverse_wts.sum()}')
+
+        Xi_mat = self._Xi(S=obs, A=actions) # (n, para_dim*num_actions)
         self._Xi_mat = Xi_mat
-        # timewise_inverse_wt = timewise_inverse_wt / self.n
+
         if dropout_prob_concat:
             dropout_prob_concat = np.concatenate(dropout_prob_concat)
         U_mat = self._U(S=next_obs, policy=policy)
-        mat1 = reduce(np.matmul,
-                      [Xi_mat.T, inverse_wts_mat, Xi_mat - self.gamma * U_mat])
-        mat2 = reduce(np.matmul, [Xi_mat.T, inverse_wts_mat, rewards])
+
+        mat1 = np.matmul(Xi_mat.T, inverse_wts * (Xi_mat - self.gamma * U_mat))
+        mat2 = np.matmul(Xi_mat.T, inverse_wts * rewards)
         max_inverse_wt = np.max(inverse_wts)
         min_inverse_wt = np.min(inverse_wts)
 
@@ -627,10 +503,6 @@ class LSTDQ(SimulationBase):
             self.total_T_ipw = self.n * (self.max_T - self.burn_in - 1)
         else:
             self.total_T_ipw = total_T
-
-        self._stretch_para()
-        self.residual = (mat2 - np.matmul(mat1, self.all_para.reshape(
-            -1, 1))) / self.total_T_ipw
 
         if grid_search:
             ridge_params = np.power(10, np.arange(-9, 1).astype(float))
@@ -653,35 +525,64 @@ class LSTDQ(SimulationBase):
                     best_gcv = gcv
                     best_edof = edof
 
-            self.Sigma_hat = mat1 / self.total_T_ipw
-            self.inv_Sigma_hat = np.linalg.pinv(
-                self.Sigma_hat +
-                np.diag([best_param] * mat1.shape[0]))  # generalized inverse
-            self.vector = mat2 / self.total_T_ipw
-            self.est_beta = np.matmul(self.inv_Sigma_hat, self.vector)
-
             self._ridge_param_cv = {
                 'best_param': best_param,
                 'best_gcv': best_gcv,
                 'best_edof': best_edof
             }
-        else:
-            self.Sigma_hat = np.diag(
-                [ridge_factor] * mat1.shape[0]) + mat1 / self.total_T_ipw
-            self.Sigma_hat = self.Sigma_hat.astype(float)
-            self.vector = mat2 / self.total_T_ipw
-            self.inv_Sigma_hat = np.linalg.pinv(self.Sigma_hat)
-            self.est_beta = np.matmul(self.inv_Sigma_hat, self.vector)
+            ridge_factor = best_param
+
+        self.Sigma_hat = np.diag([ridge_factor] * mat1.shape[0]) + mat1 / self.total_T_ipw
+        self.Sigma_hat = self.Sigma_hat.astype(float)
+        self.vector = mat2 / self.total_T_ipw
+        self.inv_Sigma_hat = np.linalg.pinv(self.Sigma_hat)
+        self.est_beta = np.matmul(self.inv_Sigma_hat, self.vector)
+        # store the estimated beta in self.para
+        self._store_para(self.est_beta)
+        if verbose:
+            print('Finish estimating beta!')        
 
         if verbose:
-            print('Finish estimating beta!')
+            print('Start calculating Omega...')
+        proj_td = inverse_wts * (rewards +
+             self.gamma * self.V(S=next_obs, policy=policy).reshape(-1, 1) -
+             self.Q(S=obs, A=actions).reshape(-1, 1)) * Xi_mat  # (n, para_dim*num_actions)
+        output = np.matmul(
+            proj_td.T, proj_td)  # (para_dim*num_actions, para_dim*num_actions)
+        self.Omega = output / self.total_T_ipw
+        if verbose:
+            print('Finish calculating Omega!')
 
-        self.residual = (mat2 -
-                         np.matmul(mat1, self.est_beta)) / self.total_T_ipw
+    def estimate_Q(self, 
+                  target_policy,
+                  ipw=False,
+                  estimate_missing_prob=False,
+                  weight_curr_step=True,
+                  prob_lbound=1e-3,
+                  ridge_factor=0.,
+                  L=10, 
+                  d=3, 
+                  knots=None,
+                  grid_search=False,
+                  verbose=True,
+                  subsample_index=None):
+        """Main function for estimating the parameters for the Q-function."""
+        
+        self.target_policy = target_policy
 
-        del training_buffer
-        self._stretch_para()
-        return self.est_beta.copy()
+        self.B_spline(L=L, d=d, knots=knots)
+
+        self._beta_hat(
+            policy=target_policy,
+            ipw=ipw,
+            estimate_missing_prob=estimate_missing_prob,
+            weight_curr_step=weight_curr_step,
+            prob_lbound=prob_lbound,
+            ridge_factor=ridge_factor,
+            grid_search=grid_search,
+            verbose=verbose,
+            subsample_index=subsample_index
+        )
 
     def _store_para(self, est_beta):
         """Store the estimated beta in self.para
@@ -689,13 +590,14 @@ class LSTDQ(SimulationBase):
         Args:
             est_beta (np.ndarray): vector of estimated beta
         """
+        if est_beta is None:
+            est_beta = self.est_beta
         for i in range(self.num_actions):
-            self.para[i] = self.est_beta[i * self.para_dim:(i + 1) *
+            self.para[i] = est_beta[i * self.para_dim:(i + 1) *
                                          self.para_dim].reshape(-1)
 
     def _Omega_hat(self,
                    policy,
-                   block=False,
                    ipw=False,
                    estimate_missing_prob=False,
                    weight_curr_step=True,
@@ -709,7 +611,6 @@ class LSTDQ(SimulationBase):
 
         Args:
             policy (callable): the target policy to evaluate that outputs actions with dimension (n, *)
-            block (bool): if True, use data in the next block
             ipw (bool): if True, use inverse weighting to adjust for missing data
             estimate_missing_prob (bool): if True, use estimated missing probability, otherwise, use ground truth (only for simulation)
             weight_curr_step (bool): if True, use the probability of dropout at current step
@@ -728,94 +629,91 @@ class LSTDQ(SimulationBase):
             assert hasattr(
                 self, 'propensity_pred'
             ), 'please call function self.estimate_missing_prob() first'
-        self._beta_hat(policy=policy,
-                       block=block,
-                       ipw=ipw,
-                       estimate_missing_prob=estimate_missing_prob,
-                       weight_curr_step=weight_curr_step,
-                       prob_lbound=prob_lbound,
-                       ridge_factor=ridge_factor,
-                       grid_search=grid_search,
-                       verbose=verbose,
-                       subsample_index=subsample_index)
-        self._store_para(self.est_beta)
-        total_T = 0
-        if not block:
+        
+        if not hasattr(self, 'est_beta') or self.est_beta is None:
+            self._beta_hat(policy=policy,
+                        ipw=ipw,
+                        estimate_missing_prob=estimate_missing_prob,
+                        weight_curr_step=weight_curr_step,
+                        prob_lbound=prob_lbound,
+                        ridge_factor=ridge_factor,
+                        grid_search=grid_search,
+                        verbose=verbose,
+                        subsample_index=subsample_index)
+
+        if not hasattr(self, 'Omega') or self.Omega is None:
+            total_T = 0
             training_buffer = self.masked_buffer
-        else:
-            training_buffer = self.next_block
-        print('Start calculating Omega...')
-        obs_list, next_obs_list = [], []
-        action_list, reward_list = [], []
-        surv_prob_list, inverse_wt_list = [], []
-        for i in training_buffer.keys():
-            S_traj = training_buffer[i][0]
-            A_traj = training_buffer[i][1]
-            reward_traj = training_buffer[i][2]
-            survival_prob = training_buffer[i][4]
-            dropout_prob = training_buffer[i][6]
-            if len(S_traj) < 2:
-                continue
-            T = S_traj.shape[0] - 1
-            total_T += S_traj.shape[0] - 1
-            obs_list.append(S_traj[:-1])
-            next_obs_list.append(S_traj[1:])
-            action_list.append(A_traj[:T].reshape(-1, 1))
-            reward_list.append(reward_traj[:T].reshape(-1, 1))
-            if estimate_missing_prob:
-                surv_prob = self.propensity_pred[i][1][:T].reshape(-1, 1)
-                dropout_prob = self.propensity_pred[i][0][:T].reshape(-1, 1)
-            else:
-                surv_prob = survival_prob[:T].reshape(
-                    -1, 1) if survival_prob is not None else None
-                dropout_prob = dropout_prob[:T].reshape(
-                    -1, 1) if dropout_prob is not None else None
-            surv_prob_list.append(surv_prob)
-            if not ipw:
-                inverse_wt = np.ones(shape=(T, 1))
-            else:
-                if weight_curr_step:
-                    inverse_wt = 1 / np.clip(a=1 - dropout_prob,
-                                             a_min=prob_lbound,
-                                             a_max=1)  # bound ipw
+            print('Start calculating Omega...')
+            obs_list, next_obs_list = [], []
+            action_list, reward_list = [], []
+            surv_prob_list, inverse_wt_list = [], []
+            for i in training_buffer.keys():
+                S_traj = training_buffer[i][0]
+                A_traj = training_buffer[i][1]
+                reward_traj = training_buffer[i][2]
+                survival_prob = training_buffer[i][4]
+                dropout_prob = training_buffer[i][6]
+                if len(S_traj) < 2:
+                    continue
+                T = S_traj.shape[0] - 1
+                total_T += S_traj.shape[0] - 1
+                obs_list.append(S_traj[:-1])
+                next_obs_list.append(S_traj[1:])
+                action_list.append(A_traj[:T].reshape(-1, 1))
+                reward_list.append(reward_traj[:T].reshape(-1, 1))
+                if estimate_missing_prob:
+                    surv_prob = self.propensity_pred[i][1][:T].reshape(-1, 1)
+                    dropout_prob = self.propensity_pred[i][0][:T].reshape(-1, 1)
                 else:
-                    inverse_wt = 1 / np.clip(
-                        a=surv_prob, a_min=prob_lbound, a_max=1)  # bound ipw
-            inverse_wt_list.append(inverse_wt)
+                    surv_prob = survival_prob[:T].reshape(
+                        -1, 1) if survival_prob is not None else None
+                    dropout_prob = dropout_prob[:T].reshape(
+                        -1, 1) if dropout_prob is not None else None
+                surv_prob_list.append(surv_prob)
+                if not ipw:
+                    inverse_wt = np.ones(shape=(T, 1))
+                else:
+                    if weight_curr_step:
+                        inverse_wt = 1 / np.clip(a=1 - dropout_prob,
+                                                a_min=prob_lbound,
+                                                a_max=1)  # bound ipw
+                    else:
+                        inverse_wt = 1 / np.clip(
+                            a=surv_prob, a_min=prob_lbound, a_max=1)  # bound ipw
+                inverse_wt_list.append(inverse_wt)
 
-        obs = np.vstack(obs_list)  # (total_T, S_dim)
-        next_obs = np.vstack(next_obs_list)  # (total_T, S_dim)
-        actions = np.vstack(action_list)  # (total_T, 1)
-        rewards = np.vstack(reward_list)  # (total_T, 1)
-        surv_probs = np.vstack(surv_prob_list)  # (total_T, 1)
-        inverse_wts = np.vstack(inverse_wt_list)  # (total_T, 1)
-        inverse_wts_mat = np.diag(
-            v=inverse_wts.squeeze()).astype(float)  # (total_T, total_T)
-        Xi = self._Xi(S=obs, A=actions)  # (n, para_dim*num_actions)
-        proj_td = np.matmul(
-            inverse_wts_mat *
-            (rewards +
-             self.gamma * self.V(S=next_obs, policy=policy).reshape(-1, 1) -
-             self.Q(S=obs, A=actions).reshape(-1, 1)), Xi
-        )  # (n, para_dim*num_actions), np.sqrt(inverse_wts_mat) or inverse_wts_mat?
-        output = np.matmul(
-            proj_td.T, proj_td)  # (para_dim*num_actions, para_dim*num_actions)
+            obs = np.vstack(obs_list)  # (total_T, S_dim)
+            next_obs = np.vstack(next_obs_list)  # (total_T, S_dim)
+            actions = np.vstack(action_list)  # (total_T, 1)
+            rewards = np.vstack(reward_list)  # (total_T, 1)
+            surv_probs = np.vstack(surv_prob_list)  # (total_T, 1)
+            inverse_wts = np.vstack(inverse_wt_list).astype(float)  # (total_T, 1)
+            inverse_wts_mat = np.diag(v=inverse_wts.squeeze()).astype(
+                float)  # (total_T, total_T)
+            del training_buffer
+            
+            Xi = self._Xi(S=obs, A=actions)  # (n, para_dim*num_actions)
+            proj_td = np.matmul(
+                inverse_wts_mat *
+                (rewards +
+                self.gamma * self.V(S=next_obs, policy=policy).reshape(-1, 1) -
+                self.Q(S=obs, A=actions).reshape(-1, 1)), Xi
+            )  # (n, para_dim*num_actions), np.sqrt(inverse_wts_mat) or inverse_wts_mat?
+            output = np.matmul(
+                proj_td.T, proj_td)  # (para_dim*num_actions, para_dim*num_actions)
 
-        self.Omega = output / self.total_T_ipw
+            self.Omega = output / self.total_T_ipw
 
-        print('Finish calculating Omega!')
-        del training_buffer
-        print(f'pseudo sample size: {inverse_wts.sum()}')
-        return self.Omega.copy()
+            print('Finish calculating Omega!')
 
     #####################################
-    ##  inference on point-wise value 
+    ##  inference on point-wise value
     #####################################
 
     def _sigma(self,
                S,
                policy,
-               block=False,
                ipw=False,
                estimate_missing_prob=False,
                weight_curr_step=True,
@@ -830,7 +728,6 @@ class LSTDQ(SimulationBase):
         Args:
             S (np.ndarray) : array of states, dimension (n, state_dim)
             policy (callable): the target policy to evaluate that outputs actions with dimension (n, *)
-            block (bool): if True, use data in the next block
             ipw (bool): if True, use inverse weighting to adjust for missing data
             estimate_missing_prob (bool): if True, use estimated missing probability, otherwise, use ground truth (only for simulation)
             weight_curr_step (bool): if True, use the probability of dropout at current step
@@ -854,7 +751,6 @@ class LSTDQ(SimulationBase):
         else:
             scaler_output = False
         self._Omega_hat(policy=policy,
-                        block=block,
                         ipw=ipw,
                         estimate_missing_prob=estimate_missing_prob,
                         weight_curr_step=weight_curr_step,
@@ -879,7 +775,6 @@ class LSTDQ(SimulationBase):
                   S,
                   policy,
                   alpha=0.05,
-                  block=False,
                   ipw=False,
                   estimate_missing_prob=False,
                   weight_curr_step=True,
@@ -895,7 +790,6 @@ class LSTDQ(SimulationBase):
             S (np.ndarray) : array of states, dimension (n, state_dim)
             policy (callable): the target policy to evaluate that outputs actions with dimension (n, *)
             alpha (float): significance level, default is 0.05
-            block (bool): if True, use data in the next block
             ipw (bool): if True, use inverse weighting to adjust for missing data
             estimate_missing_prob (bool): if True, use estimated missing probability, otherwise, use ground truth (only for simulation)
             weight_curr_step (bool): if True, use the probability of dropout at current step
@@ -922,7 +816,6 @@ class LSTDQ(SimulationBase):
         total_T = self.total_T_ipw  # self.total_T_ipw, self.total_T
         sigma_sq = self._sigma(S=S,
                                policy=policy,
-                               block=block,
                                ipw=ipw,
                                estimate_missing_prob=estimate_missing_prob,
                                weight_curr_step=weight_curr_step,
@@ -943,28 +836,25 @@ class LSTDQ(SimulationBase):
         return lower_bound, upper_bound
 
     #######################################
-    ##   inference on integrated value 
+    ##   inference on integrated value
     #######################################
 
-    def _sigma_int(
-            self,
-            policy,
-            block=False,
-            ipw=False,
-            estimate_missing_prob=False,
-            weight_curr_step=True,
-            prob_lbound=1e-3,
-            ridge_factor=1e-9,
-            grid_search=False,
-            MC_size=None,
-            S_inits=None,
-            verbose=True,
-            subsample_index=None):
+    def _sigma_int(self,
+                   policy,
+                   ipw=False,
+                   estimate_missing_prob=False,
+                   weight_curr_step=True,
+                   prob_lbound=1e-3,
+                   ridge_factor=1e-9,
+                   grid_search=False,
+                   MC_size=None,
+                   S_inits=None,
+                   verbose=True,
+                   subsample_index=None):
         """Get sigma_hat for integrated value.
 
         Args:
             policy (callable): target policy to be evaluated
-            block (bool): if True, use the current block for policy evaluation. Otherwise, use all the data.
             ipw (bool): if True, use inverse probability weighting to adjust for missing data
             estimate_missing_prob (bool): if True, estimate the probability. Otherwise, use the true probability.
             weight_curr_step (bool): if True, wight by the inverse probability of observing the next state. 
@@ -980,10 +870,8 @@ class LSTDQ(SimulationBase):
         Returns:
             V_int_sigma_sq (float): sigma_hat for integrated value
         """
-        # print("start calculating Omega...")
         if not hasattr(self, 'Omega') or self.Omega is None:
             self._Omega_hat(policy=policy,
-                            block=block,
                             ipw=ipw,
                             estimate_missing_prob=estimate_missing_prob,
                             weight_curr_step=weight_curr_step,
@@ -992,15 +880,18 @@ class LSTDQ(SimulationBase):
                             grid_search=grid_search,
                             verbose=verbose,
                             subsample_index=subsample_index)
-        
+
         print("start extracting U....")
         if S_inits is None:
             if MC_size is not None:
-                S_inits = self.sample_initial_states(size=MC_size, from_data=True)
+                S_inits = self.sample_initial_states(size=MC_size,
+                                                     from_data=True)
             else:
                 S_inits = self._initial_obs
-        U = self._U(S=S_inits, policy=policy)  # (MC_size, para_dim * num_actions)
-        U_int = np.mean(U, axis=0).reshape(-1, 1)  # (para_dim * num_actions, 1)
+        U = self._U(S=S_inits,
+                    policy=policy)  # (MC_size, para_dim * num_actions)
+        U_int = np.mean(U, axis=0).reshape(-1,
+                                           1)  # (para_dim * num_actions, 1)
 
         # get sigma_sq
         print("start obtaining squared sigma....")
@@ -1010,9 +901,9 @@ class LSTDQ(SimulationBase):
         ])
         self.V_int_sigma_sq = V_int_sigma_sq.item()
 
-        beta_hat_sigma_sq = np.diag(
-            reduce(np.matmul,
-                   [self.inv_Sigma_hat, self.Omega, self.inv_Sigma_hat.T]))
+        # beta_hat_sigma_sq = np.diag(
+        #     reduce(np.matmul,
+        #            [self.inv_Sigma_hat, self.Omega, self.inv_Sigma_hat.T]))
 
         return self.V_int_sigma_sq
 
@@ -1028,8 +919,8 @@ class LSTDQ(SimulationBase):
                       MC_size=10000,
                       S_inits=None,
                       verbose=True,
-                      subsample_index=None,
-                      block=False):
+                      subsample_index=None
+                    ):
         """Make inference on integrated value.
 
         Args:
@@ -1046,7 +937,6 @@ class LSTDQ(SimulationBase):
             S_inits (np.ndarray): initial states for policy evaluation
             verbose (bool): if True, output intermediate results
             subsample_index (list): ids of subsample to estimate beta
-            block (bool): if True, use the current block for policy evaluation. Otherwise, use all the data.
 
         Returns:
             inference_summary (dict)
@@ -1054,7 +944,6 @@ class LSTDQ(SimulationBase):
 
         V_int_sigma_sq = self._sigma_int(
             policy=policy,
-            block=block,
             ipw=ipw,
             estimate_missing_prob=estimate_missing_prob,
             weight_curr_step=weight_curr_step,
@@ -1081,7 +970,14 @@ class LSTDQ(SimulationBase):
         }
         return inference_summary
 
-    def get_target_value(self, target_policy, S_inits=None, MC_size=None):
+    def get_state_values(self, target_policy=None, S_inits=None):
+        if target_policy is None:
+            target_policy = self.target_policy
+        if S_inits is None:
+            S_inits = self._initial_obs
+        return self.V(S_inits)
+
+    def get_value(self, target_policy=None, S_inits=None, MC_size=None):
         """Wrapper function of V_int
         
         Args:
@@ -1095,114 +991,542 @@ class LSTDQ(SimulationBase):
         """
         if MC_size is None and S_inits is None:
             S_inits = self._initial_obs
-        est_V = self.V_int(policy=target_policy, MC_size=MC_size, S_inits=S_inits)
+        if target_policy is None:
+            target_policy = self.target_policy
+        est_V = self.V_int(policy=target_policy,
+                           MC_size=MC_size,
+                           S_inits=S_inits)
         return est_V
 
-    def evaluate_policy(self,
-                        policy,
-                        eval_size=20,
-                        seed=None,
-                        S_inits=None,
-                        lower_b=None,
-                        upper_b=None,
-                        calc_value_est=True,
-                        mask_unobserved=True):
-        """
-        Evaluate given policy (Deprecated)
+    def get_value_interval(self, target_policy=None, alpha=0.05, S_inits=None, MC_size=None):
+        """Main function for getting value confidence interval."""
 
+        print("Calculating the U matrix")
+        if S_inits is None:
+            if MC_size is not None:
+                S_inits = self.sample_initial_states(size=MC_size,
+                                                     from_data=True)
+            else:
+                S_inits = self._initial_obs
+        if target_policy is None:
+            target_policy = self.target_policy
+        U = self._U(S=S_inits, policy=target_policy)  # (MC_size, para_dim * num_actions)
+        U_int = np.mean(U, axis=0).reshape(-1,1)  # (para_dim * num_actions, 1)
+
+        print("Getting value point estimates")
+        V = self.V_int(policy=target_policy, MC_size=MC_size, S_inits=S_inits)
+
+        print("Calculating sigma-squared")
+        V_int_sigma_sq = reduce(np.matmul, [
+            U_int.T, self.inv_Sigma_hat, self.Omega, self.inv_Sigma_hat.T,
+            U_int
+        ])
+        V_int_sigma_sq = V_int_sigma_sq.item()
+        std = (V_int_sigma_sq**0.5) / (self.total_T_ipw**0.5)
+       
+        lower_bound = V - norm.ppf(1 - alpha / 2) * std
+        upper_bound = V + norm.ppf(1 - alpha / 2) * std
+        print("Finish value inference!")
+
+        inference_summary = {
+            'lower_bound': lower_bound,
+            'upper_bound': upper_bound,
+            'value': V,
+            'std': std
+        }
+        return inference_summary
+
+    def validate_Q(self, grid_size=10, visualize=False):
+        self.grid = []
+        self.idx2states = collections.defaultdict(list)
+
+        obs_list, action_list = [], []
+        for i in self.masked_buffer.keys():
+            S_traj = self.masked_buffer[i][0]
+            A_traj = self.masked_buffer[i][1]
+            T = len(S_traj) - 1
+
+            obs_list.append(S_traj[:-1])
+            action_list.append(np.array(A_traj[:T]).reshape(-1, 1))
+
+        states = np.vstack(obs_list)  # (total_T, S_dim)
+        actions = np.vstack(action_list)  # (total_T, 1)
+        Q_est = self.Q(S=states, A=actions).squeeze()
+
+        # generate trajectories under the target policy
+        init_states = states # self._initial_obs
+        init_actions = actions # self._init_actions
+        old_num_envs = self.eval_env.num_envs
+        eval_size = len(init_states)
+
+        self.eval_env.num_envs = eval_size
+        self.eval_env.observation_space = batch_space(
+            self.eval_env.single_observation_space,
+            n=self.eval_env.num_envs)
+        self.eval_env.action_space = Tuple(
+            (self.eval_env.single_action_space, ) * self.eval_env.num_envs)
+
+        trajectories = self.gen_batch_trajs(
+            policy=self.target_policy,
+            seed=None,
+            S_inits=init_states,
+            A_inits=init_actions,
+            burn_in=0,
+            evaluation=True)
+        rewards_history = self.eval_env.rewards_history * \
+                    self.eval_env.states_history_mask[:,
+                                                      :self.eval_env.rewards_history.shape[1]]
+        Q_ref = np.matmul(
+                    rewards_history,
+                    self.gamma**np.arange(
+                        start=0, stop=rewards_history.shape[1]).reshape(-1, 1)).squeeze()
+        # recover eval_env
+        self.eval_env.num_envs = old_num_envs
+        self.eval_env.observation_space = batch_space(
+            self.eval_env.single_observation_space,
+            n=self.eval_env.num_envs)
+        self.eval_env.action_space = Tuple(
+            (self.eval_env.single_action_space, ) * self.eval_env.num_envs)
+
+        discretized_states = np.zeros_like(states)
+        for i in range(self.state_dim):
+            disc_bins = np.linspace(start=self.low[i] - 0.1, stop=self.high[i] + 0.1, num=grid_size + 1)
+            # disc_bins = np.quantile(a=states[:,i], q=np.linspace(0, 1, grid_size + 1))
+            # disc_bins[0] -= 0.1
+            # disc_bins[-1] += 0.1
+            self.grid.append(disc_bins)
+            discretized_states[:,i] = np.digitize(states[:,i], bins=disc_bins) - 1
+        discretized_states = list(map(tuple, discretized_states.astype('int')))
+        for ds, s, a, q, qr in zip(discretized_states, states, actions.squeeze(), Q_est, Q_ref):
+            self.idx2states[ds].append(np.concatenate([s, [a], [q], [qr]]))
+
+        # only for 2D state, binary action
+        Q_mat = np.zeros(shape=(self.num_actions, grid_size, grid_size))
+        Q_ref_mat = np.zeros(shape=(self.num_actions, grid_size, grid_size))
+        for k, v in self.idx2states.items():
+            v = np.array(v)
+            if any(v[:,self.state_dim] == 0):
+                Q_mat[0][k[0]][k[1]] = np.mean(v[v[:,self.state_dim] == 0,self.state_dim+1])
+                Q_ref_mat[0][k[0]][k[1]] = np.mean(v[v[:,self.state_dim] == 0,self.state_dim+2])
+            if any(v[:,self.state_dim] == 1):
+                Q_mat[1][k[0]][k[1]] = np.mean(v[v[:,self.state_dim] == 1,self.state_dim+1])
+                Q_ref_mat[1][k[0]][k[1]] = np.mean(v[v[:,self.state_dim] == 1,self.state_dim+2])
+
+        if visualize:
+
+            fig, ax = plt.subplots(2, self.num_actions, figsize=(5*self.num_actions,8))
+            for a in range(self.num_actions):
+                sns.heatmap(
+                    Q_mat[a], 
+                    cmap="YlGnBu",
+                    linewidth=1,
+                    ax=ax[0,a]
+                )
+                ax[0,a].invert_yaxis()
+                ax[0,a].set_title(f'estimated Q (action={a})')
+            for a in range(self.num_actions):
+                sns.heatmap(
+                    Q_ref_mat[a], 
+                    cmap="YlGnBu",
+                    linewidth=1,
+                    ax=ax[1,a]
+                )
+                ax[1,a].invert_yaxis()
+                ax[1,a].set_title(f'empirical Q (action={a})')
+            plt.savefig('Q_func_heatplot.png')
+
+
+
+class FQE(SimulationBase):
+    """
+    Le, Hoang, Cameron Voloshin, and Yisong Yue. "Batch policy learning under constraints." 
+    International Conference on Machine Learning. PMLR, 2019.
+    """
+
+    def __init__(self,
+                 env=None,
+                 n=500,
+                 horizon=None,
+                 discount=0.8,
+                 eval_env=None,
+                 device=None):
+        """
         Args:
-            policy (callable): target policy to be evaluated
-            eval_size (int): Monte Carlo size to estimate point-wise value
-            seed (int): random seed passed to gen_single_traj() or gen_batch_trajs()
-            S_inits (np.ndarray): initial states for policy evaluation
-            lower_b (float): lower bound of value
-            upper_b (float): upper bound of value
-            calc_value_est (bool): if True, also output estimated value
-            mask_unobserved (bool): if True, mask unobserved states
+            env (gym.Env): dynamic environment
+            n (int): the number of subjects (trajectories)
+            horizon (int): the maximum length of trajectories
+            discount (float): discount factor
+            eval_env (gym.Env): dynamic environment to evaluate the policy, if not specified, use env
+        """
+
+        super().__init__(env=env,
+                         n=n,
+                         horizon=horizon,
+                         discount=discount,
+                         eval_env=eval_env)
+
+        if device is None:
+            self.device = torch.device(
+                'cuda' if torch.cuda.is_available() else 'cpu')
+        else:
+            self.device = device
+
+    def estimate_Q(
+            self,
+            target_policy,
+            max_iter=200,
+            tol=0.001,
+            use_RF=False,
+            hidden_sizes=[256,256],
+            # num_actions=2,
+            lr=0.001,
+            batch_size=128,
+            epoch=20000,
+            patience=10,
+            seed=0,
+            scaler="Standard",
+            print_freq=10,
+            verbose=0,
+            # other RF arguments
+            **kwargs):
+
+        self.replay_buffer = SimpleReplayBuffer(trajs=self.masked_buffer,
+                                                seed=seed)
+        self.target_policy = target_policy
+        self.use_RF = use_RF
+        self.lr = lr
+
+        if scaler == "NormCdf":
+            self.scaler = normcdf()
+        elif scaler == "Identity":
+            self.scaler = iden()
+        elif scaler == "MinMax":
+            self.scaler = MinMaxScaler(
+                min_val=self.env.low,
+                max_val=self.env.high
+            ) if self.env is not None else MinMaxScaler()
+        elif scaler == "Standard":
+            self.scaler = StandardScaler(with_mean=True, with_std=True)
+        else:
+            # a path to a fitted scaler
+            assert os.path.exists(scaler)
+            with open(scaler, 'rb') as f:
+                self.scaler = pickle.load(f)
+
+        if use_RF:
+            self.model = RandomForestRegressor(**kwargs,
+                                               n_jobs=-1,
+                                               verbose=0,
+                                               random_state=seed)
+        else:
+            # NN
+            self.model = QNetwork(state_dim=self.state_dim,
+                                  num_actions=self.num_actions,
+                                  hidden_sizes=hidden_sizes)
+            self.target_model = QNetwork(state_dim=self.state_dim,
+                                  num_actions=self.num_actions,
+                                  hidden_sizes=hidden_sizes)
+            # self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
+            # self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer,
+            #                                                  step_size=100,
+            #                                                  gamma=0.99)
+
+        # state features shuold be scaled first
+        self._train(max_iter=max_iter,
+                    tol=tol,
+                    batch_size=batch_size,
+                    epoch=epoch,
+                    patience=patience,
+                    print_freq=print_freq,
+                    verbose=verbose)
+
+    def _train(self,
+               max_iter,
+               tol,
+               batch_size,
+               epoch,
+               patience,
+               print_freq=10,
+               verbose=0):
+        state = self.replay_buffer.states
+        action = self.replay_buffer.actions
+        reward = self.replay_buffer.rewards
+        next_state = self.replay_buffer.next_states
+        if state.ndim == 1:
+            state = state.reshape((-1, 1))
+            next_state = next_state.reshape((-1, 1))
+        pi_next_state_prob = self.target_policy.get_action_prob(next_state) # the input should be on the original scale
+        old_target_Q = reward / (1 - self.gamma)
+
+        # standardize the input
+        state_concat = np.vstack([state, next_state])
+        self.scaler.fit(state_concat)
+        state = self.scaler.transform(state)
+        next_state = self.scaler.transform(next_state)
+
+        for itr in range(max_iter):
+
+            if self.use_RF:
+                if itr > 0:
+                    target_Q = reward + self.gamma * np.sum(
+                        self.model.predict(next_state) * pi_next_state_prob,
+                        axis=1)
+                    _targets = self.model.predict(state)
+                    _targets[range(len(action)), action.astype(int)] = target_Q
+                else:
+                    target_Q = reward / (1 - self.gamma)
+                    _targets = np.zeros(shape=(len(action), self.num_actions))
+                    _targets[range(len(action)), action.astype(int)] = target_Q
+                
+                self.model.fit(state, _targets)
+            else:
+                self.model.train()
+                # reset optimizer and scheduler
+                self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
+                self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer,
+                                                                step_size=100,
+                                                                gamma=0.99)
+                min_loss = float('inf')
+                self.losses = []
+                wait_count = 0
+                for ep in range(epoch):
+                    transitions = self.replay_buffer.sample(batch_size)
+                    state, action, reward, next_state = transitions[:4]
+                    pi_next_state = self.target_policy.get_action(next_state) # input should on the original scale
+                    pi_next_state_prob = self.target_policy.get_action_prob(
+                        next_state)  # input should on the original scale
+                    # standardize the input
+                    state = self.scaler.transform(state)
+                    next_state = self.scaler.transform(next_state)
+                    
+                    state = torch.Tensor(state).to(self.device)
+                    action = torch.LongTensor(action[:, np.newaxis]).to(self.device)
+                    reward = torch.Tensor(reward[:, np.newaxis]).to(self.device)
+                    next_state = torch.Tensor(next_state).to(self.device)
+                    pi_next_state_prob = torch.Tensor(pi_next_state_prob).to(self.device)
+
+                    # Compute the target Q value
+                    if itr > 0:
+                        with torch.no_grad():
+                            target_Q = reward + self.gamma * torch.sum(
+                                self.target_model(next_state) * pi_next_state_prob,
+                                dim=1, keepdim=True) # notice, use target network here
+                    else:
+                        target_Q = reward / (1 - self.gamma)
+
+                    # Get current Q estimate
+                    current_Q = self.model(state).gather(dim=1, index=action)
+
+                    # Compute Q loss, closely related to HuberLoss
+                    Q_loss = F.smooth_l1_loss(input=current_Q, target=target_Q)
+
+                    # Optimize the Q
+                    self.optimizer.zero_grad()
+                    Q_loss.backward()
+                    self.optimizer.step()
+                    self.scheduler.step()
+
+                    self.losses.append(Q_loss.detach().numpy())
+
+                    mean_loss = self.losses[0]
+                    if ep % 5 == 0 and ep >= 10:
+                        if ep >= 50:
+                            mean_loss = np.mean(self.losses[(ep - 50):ep])
+                        else:
+                            mean_loss = np.mean(self.losses[(ep - 10):ep])
+                        if mean_loss / min_loss > 1:
+                            wait_count += 1
+                        if mean_loss < min_loss:
+                            min_loss = mean_loss
+                            wait_count = 0
+                    if patience is not None and wait_count >= patience:
+                        break
+                
+                # update target network
+                self._target_update()
+
+                # evaluate on the whole data
+                reward = self.replay_buffer.rewards
+                next_state = self.replay_buffer.next_states
+                pi_next_state_prob = self.target_policy.get_action_prob(next_state)
+                next_state = self.scaler.transform(next_state)
+                reward = torch.Tensor(reward).to(self.device)
+                next_state = torch.Tensor(next_state).to(self.device)
+                pi_next_state_prob = torch.Tensor(pi_next_state_prob).to(self.device)
+                with torch.no_grad():
+                    target_Q = reward + self.gamma * torch.sum(
+                        self.model(next_state) * pi_next_state_prob,
+                        dim=1, keepdim=True) # notice, use target network here
+                # convert to numpy array for comparison
+                target_Q = target_Q.detach().numpy()
+
+            target_diff = abs(target_Q - old_target_Q).mean() / (abs(old_target_Q).mean() + 1e-6)
+            
+            if verbose >= 1 and itr % print_freq == 0:
+                action_init_states = self.target_policy.get_action(
+                    self._initial_obs)
+                values = self.Q(self._initial_obs, action_init_states) # call model.eval() inside
+                est_value = np.mean(values)
+                print(
+                    colored(
+                        "[iteration {}] V = {:.2f} with diff = {:.4f} and std_init_Q = {:.1f}"
+                        .format(itr, est_value, target_diff,
+                                np.std(values)), 'green'))
+            if itr > 0 and target_diff < tol:
+                break
+            
+            old_target_Q = target_Q.copy()
+
+    def _target_update(self):
+        for param, target_param in zip(self.model.parameters(), self.target_model.parameters()):
+            target_param.data.copy_(param.data)
+
+    def Q(self, S, A=None):
+        if S.ndim == 1:
+            S = np.expand_dims(S, 1)
+        S = self.scaler.transform(S)
+        if self.use_RF:
+            Q_values = self.model.predict(S)
+            if A is not None:
+                return np.take_along_axis(arr=Q_values, indices=A.reshape(-1,1), axis=1)
+            else:
+                return Q_values
+        else:
+            S = torch.Tensor(S).to(self.device)
+
+            self.model.eval()
+            Q_values = self.model(S)
+
+            if A is not None:
+                A = torch.LongTensor(A.reshape(-1,1)).to(self.device)
+                return Q_values.gather(dim=1, index=A).detach().numpy()
+            else:
+                return Q_values.detach().numpy()
+
+    def V(self, S, policy=None):
+        if S.ndim == 1:
+            S = np.expand_dims(S, 1)
+        if policy is None:
+            policy = self.target_policy
+        action_probs = policy.get_action_prob(S)
+        Q_values = self.Q(S, A=None)  # (n, num_actions)
+        return np.sum(Q_values * action_probs, axis=1)
+
+    def get_state_values(self, target_policy=None, S_inits=None):
+        if target_policy is None:
+            target_policy = self.target_policy
+        if S_inits is None:
+            S_inits = self._initial_obs
+        return self.V(S_inits)
+
+    def get_value(self, target_policy=None, S_inits=None, MC_size=None):
+        """Wrapper function of V_int
+        
+        Args:
+            target_policy (callable): target policy to be evaluated.
+            S_inits (np.ndarray): initial states for policy evaluation. If both S_inits and MC_size are not 
+                specified, use initial observations from data.
+            MC_size (int): sample size for Monte Carlo approximation.
 
         Returns:
-            true_V (list): true value for each state
-            action_percent: percentage of action=1 (only apply for binary action)
-            est_V (list): estimated value for each state
-            proportion of value within the bounds (float)
+            est_V (float): integrated value of target policy
         """
-        if not self.vectorized_env:
-            true_V = []
-            action_percent = []
-            est_V = []
-            count = 0
-            if S_inits is not None and np.shape(S_inits) == (self.env.dim, ):
-                S_inits = np.tile(A=S_inits, reps=(eval_size, 1))
-            # evaluation on n subjects
-            for i in range(eval_size):
-                trajectories = self.gen_single_traj(
-                    policy=policy,
-                    seed=seed,
-                    S_init=S_inits[i] if S_inits is not None else None,
-                    evaluation=True)
-                S, A, reward, T = trajectories[:4]
-                est_true_Value = sum(
-                    np.array([self.gamma**j
-                              for j in range(T)]) * np.array(reward))
-                true_V.append(est_true_Value)
-                action_percent.append(np.mean(A))
-                if calc_value_est:
-                    est_V.append(np.mean(self.V(S=S[0], policy=policy)))
-                if lower_b or upper_b is not None:
-                    if est_true_Value >= lower_b and est_true_Value <= upper_b:
-                        count += 1
-            if lower_b or upper_b is not None:
-                return true_V, action_percent, est_V, count / eval_size
-            else:
-                return true_V, action_percent, est_V, []
-        else:
-            old_num_envs = self.eval_env.num_envs
-            # reset num_envs
-            self.eval_env.num_envs = eval_size
-            self.eval_env.observation_space = batch_space(
-                self.eval_env.single_observation_space,
-                n=self.eval_env.num_envs)
-            self.eval_env.action_space = Tuple(
-                (self.eval_env.single_action_space, ) * self.eval_env.num_envs)
+        if MC_size is None and S_inits is None:
+            S_inits = self._initial_obs
+        if target_policy is None:
+            target_policy = self.target_policy
+        est_V = self.V_int(policy=target_policy,
+                           MC_size=MC_size,
+                           S_inits=S_inits)
+        return est_V
 
-            count = 0
-            if S_inits is not None and np.shape(S_inits) == (self.env.dim, ):
-                S_inits = np.tile(A=S_inits, reps=(eval_size, 1))
-            trajectories = self.gen_batch_trajs(
-                policy=policy,
-                seed=seed,
-                S_inits=S_inits if S_inits is not None else None,
-                evaluation=True)
-            S, A, reward, T = trajectories[:4]
-            # set unobserved (mask=0) reward to 0
-            if mask_unobserved:
-                rewards_history = self.eval_env.rewards_history * self.eval_env.states_history_mask[:, :
-                                                                                                    -1]
-            else:
-                rewards_history = self.eval_env.rewards_history
-            # recover num_envs
-            self.eval_env.num_envs = old_num_envs
-            self.eval_env.observation_space = batch_space(
-                self.eval_env.single_observation_space,
-                n=self.eval_env.num_envs)
-            self.eval_env.action_space = Tuple(
-                (self.eval_env.single_action_space, ) * self.eval_env.num_envs)
+    def validate_Q(self, grid_size=10, visualize=False):
+        self.grid = []
+        self.idx2states = collections.defaultdict(list)
+        states = self.replay_buffer.states
+        actions = self.replay_buffer.actions
+        Q_est = self.Q(S=states, A=actions).squeeze()
 
-            true_value = np.matmul(
-                rewards_history,
-                self.gamma**np.arange(start=0,
-                                      stop=rewards_history.shape[1]).reshape(
-                                          -1, 1))
-            true_V = true_value.squeeze().tolist()
-            action_percent = np.mean(A, axis=1).tolist()
-            est_V = []
-            if calc_value_est:
-                for i in range(len(S)):
-                    est_V.append(self.V(S=S[i][0], policy=policy))
-            if lower_b or upper_b is not None:
-                if true_value >= lower_b and true_value <= upper_b:
-                    count += 1
-        if lower_b or upper_b is not None:
-            return true_V, action_percent, est_V, count / eval_size
-        else:
-            return true_V, action_percent, est_V, []
+        # generate trajectories under the target policy
+        init_states = states # self._initial_obs
+        init_actions = actions # self._init_actions
+        old_num_envs = self.eval_env.num_envs
+        eval_size = len(init_states)
+
+        self.eval_env.num_envs = eval_size
+        self.eval_env.observation_space = batch_space(
+            self.eval_env.single_observation_space,
+            n=self.eval_env.num_envs)
+        self.eval_env.action_space = Tuple(
+            (self.eval_env.single_action_space, ) * self.eval_env.num_envs)
+
+        trajectories = self.gen_batch_trajs(
+            policy=self.target_policy.policy_func,
+            seed=None,
+            S_inits=init_states,
+            A_inits=init_actions,
+            burn_in=0,
+            evaluation=True)
+        rewards_history = self.eval_env.rewards_history * \
+                    self.eval_env.states_history_mask[:,
+                                                      :self.eval_env.rewards_history.shape[1]]
+        Q_ref = np.matmul(
+                    rewards_history,
+                    self.gamma**np.arange(
+                        start=0, stop=rewards_history.shape[1]).reshape(-1, 1)).squeeze()
+        # recover eval_env
+        self.eval_env.num_envs = old_num_envs
+        self.eval_env.observation_space = batch_space(
+            self.eval_env.single_observation_space,
+            n=self.eval_env.num_envs)
+        self.eval_env.action_space = Tuple(
+            (self.eval_env.single_action_space, ) * self.eval_env.num_envs)
+
+        discretized_states = np.zeros_like(states)
+        for i in range(self.state_dim):
+            disc_bins = np.linspace(start=self.low[i] - 0.1, stop=self.high[i] + 0.1, num=grid_size + 1)
+            # disc_bins = np.quantile(a=states[:,i], q=np.linspace(0, 1, grid_size + 1))
+            # disc_bins[0] -= 0.1
+            # disc_bins[-1] += 0.1
+            self.grid.append(disc_bins)
+            discretized_states[:,i] = np.digitize(states[:,i], bins=disc_bins) - 1
+        discretized_states = list(map(tuple, discretized_states.astype('int')))
+        for ds, s, a, q, qr in zip(discretized_states, states, actions, Q_est, Q_ref):
+            self.idx2states[ds].append(np.concatenate([s, [a], [q], [qr]]))
+
+        # only for 2D state, binary action
+        Q_mat = np.zeros(shape=(self.num_actions, grid_size, grid_size))
+        Q_ref_mat = np.zeros(shape=(self.num_actions, grid_size, grid_size))
+        for k, v in self.idx2states.items():
+            v = np.array(v)
+            if any(v[:,self.state_dim] == 0):
+                Q_mat[0][k[0]][k[1]] = np.mean(v[v[:,self.state_dim] == 0,self.state_dim+1])
+                Q_ref_mat[0][k[0]][k[1]] = np.mean(v[v[:,self.state_dim] == 0,self.state_dim+2])
+            if any(v[:,self.state_dim] == 1):
+                Q_mat[1][k[0]][k[1]] = np.mean(v[v[:,self.state_dim] == 1,self.state_dim+1])
+                Q_ref_mat[1][k[0]][k[1]] = np.mean(v[v[:,self.state_dim] == 1,self.state_dim+2])
+
+        if visualize:
+
+            fig, ax = plt.subplots(2, self.num_actions, figsize=(5*self.num_actions,8))
+            for a in range(self.num_actions):
+                sns.heatmap(
+                    Q_mat[a], 
+                    cmap="YlGnBu",
+                    linewidth=1,
+                    ax=ax[0,a]
+                )
+                ax[0,a].invert_yaxis()
+                ax[0,a].set_title(f'estimated Q (action={a})')
+            for a in range(self.num_actions):
+                sns.heatmap(
+                    Q_ref_mat[a], 
+                    cmap="YlGnBu",
+                    linewidth=1,
+                    ax=ax[1,a]
+                )
+                ax[1,a].invert_yaxis()
+                ax[1,a].set_title(f'empirical Q (action={a})')
+            plt.savefig('Q_func_heatplot.png')
+
+
