@@ -63,8 +63,8 @@ def random_stochastic_matrix(dim, num_cols=None, dtype=torch.float32):
 
 class MulitNetworkQNetwork(nn.Module):
     def __init__(self,
-                 state_dim,
-                 num_actions,
+                 input_dim,
+                 output_dim,
                  num_networks,
                  hidden_sizes=[256, 256],
                  transform_strategy='stochastic',
@@ -72,7 +72,7 @@ class MulitNetworkQNetwork(nn.Module):
         """
         Parameters
 		----------
-        state_dim (int) :
+        state_dim (int) : state dimension
         num_actions (int) : number of actions.
         hidden_sizes (list) : sizes of hidden layers.
         num_networks (int) : number of separate Q-networks.
@@ -82,8 +82,9 @@ class MulitNetworkQNetwork(nn.Module):
         kwargs: keyword arguments passed to `transform_matrix`, the matrix for transforming the Q-values if only
             the passed `transform_strategy` is `stochastic`.
         """
-        super(MulitNetworkQNetwork, self).__init__()
-        self._num_actions = num_actions
+        super().__init__()
+        self._state_dim = input_dim
+        self._num_actions = output_dim
         self._num_networks = num_networks
         self._transform_strategy = transform_strategy
         self._kwargs = kwargs
@@ -91,8 +92,8 @@ class MulitNetworkQNetwork(nn.Module):
         # self._q_networks = []
         self._q_networks = nn.ModuleList()
         for i in range(self._num_networks):
-            q_net = QNetwork(state_dim=state_dim,
-                             num_actions=num_actions,
+            q_net = QNetwork(input_dim=self._state_dim,
+                             output_dim=self._num_actions,
                              hidden_sizes=hidden_sizes)
             self._q_networks.append(q_net)
 
@@ -161,8 +162,8 @@ class REM(object):
             kwargs.update({'transform_matrix': self._q_networks_transform})
 
         self.Q = MulitNetworkQNetwork(
-            state_dim=state_dim,
-            num_actions=self.num_actions,
+            input_dim=state_dim,
+            output_dim=self.num_actions,
             num_networks=self.num_networks,
             hidden_sizes=hidden_sizes,
             transform_strategy=self.transform_strategy,

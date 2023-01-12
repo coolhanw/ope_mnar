@@ -17,17 +17,17 @@ from batch_rl.utils import ReplayBuffer, moving_average
 
 
 class BehaviorQNetwork(nn.Module):
-    def __init__(self, state_dim, num_actions, hidden_sizes=[256, 256]):
-        super(BehaviorQNetwork, self).__init__()
+    def __init__(self, input_dim, output_dim, hidden_sizes=[256, 256]):
+        super().__init__()
 
         self._hidden_sizes = hidden_sizes
-        self._state_dim = state_dim
-        self._num_actions = num_actions
+        self._state_dim = input_dim
+        self._num_actions = output_dim
 
         # Q-funtion
         Q_layers = []
         # hidden layers
-        for prev_size, size in zip([state_dim] + hidden_sizes[:-1], hidden_sizes):
+        for prev_size, size in zip([self._state_dim] + hidden_sizes[:-1], hidden_sizes):
             linear_layer = nn.Linear(in_features=prev_size,
                                         out_features=size)
             nn.init.xavier_normal_(linear_layer.weight)
@@ -36,14 +36,14 @@ class BehaviorQNetwork(nn.Module):
             Q_layers.append(nn.ReLU())
         # output layer
         output_layer = nn.Linear(in_features=hidden_sizes[-1],
-                                    out_features=num_actions)
+                                    out_features=self._num_actions)
         Q_layers.append(output_layer)
         self.Q_layers = nn.Sequential(*Q_layers)
         
         # generative model
         G_layers = []
         # hidden layers
-        for prev_size, size in zip([state_dim] + hidden_sizes[:-1],
+        for prev_size, size in zip([self._state_dim] + hidden_sizes[:-1],
                                     hidden_sizes):
             linear_layer = nn.Linear(in_features=prev_size,
                                         out_features=size)
@@ -53,7 +53,7 @@ class BehaviorQNetwork(nn.Module):
             G_layers.append(nn.ReLU())
         # output layer
         output_layer = nn.Linear(in_features=hidden_sizes[-1],
-                                    out_features=num_actions)
+                                    out_features=self._num_actions)
         G_layers.append(output_layer)
         self.G_layers = nn.Sequential(*G_layers)
 
@@ -85,7 +85,7 @@ class discrete_BCQ(object):
         self.device = device
 
         # Determine network type
-        self.Q = BehaviorQNetwork(state_dim=state_dim, num_actions=num_actions, hidden_sizes=hidden_sizes).to(self.device)
+        self.Q = BehaviorQNetwork(input_dim=state_dim, output_dim=num_actions, hidden_sizes=hidden_sizes).to(self.device)
         self.Q_target = copy.deepcopy(self.Q)
         self.Q_optimizer = getattr(torch.optim,optimizer)(self.Q.parameters(),**optimizer_parameters)
         self.discount = discount

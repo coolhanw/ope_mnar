@@ -14,38 +14,53 @@ import seaborn as sns
 from batch_rl.utils import moving_average
 
 class QNetwork(nn.Module):
-    def __init__(self, state_dim, num_actions, hidden_sizes=[256, 256]):
-        super(QNetwork, self).__init__()
+    def __init__(
+        self, 
+        input_dim, 
+        output_dim, 
+        hidden_sizes=[256, 256],
+        hidden_nonlinearity=nn.ReLU(),
+        hidden_w_init=nn.init.xavier_normal_,
+        hidden_b_init=nn.init.zeros_,
+        output_nonlinearities=None,
+        output_bias=True,
+        output_w_inits=nn.init.xavier_normal_,
+        output_b_inits=nn.init.zeros_,
+    ):
+        super().__init__()
 
         self._hidden_sizes = hidden_sizes
-        self._state_dim = state_dim
-        self._num_actions = num_actions
+        self._state_dim = input_dim
+        self._num_actions = output_dim
 
         # build network structure
         layers = []
 
         # input layer
-        input_layer = nn.Linear(in_features=state_dim,
+        input_layer = nn.Linear(in_features=self._state_dim,
                                 out_features=hidden_sizes[0])
         nn.init.xavier_normal_(input_layer.weight)
         nn.init.zeros_(input_layer.bias)
         layers.append(input_layer)
-        layers.append(nn.LeakyReLU(negative_slope=0.2))  # nn.LeakyReLU(0.01)
+        layers.append(hidden_nonlinearity)  # nn.LeakyReLU(0.01), nn.LeakyReLU(0.2)
 
         # hidden layers
         for prev_size, size in zip(hidden_sizes[:-1], hidden_sizes[1:]):
             linear_layer = nn.Linear(in_features=prev_size, out_features=size)
-            nn.init.xavier_normal_(linear_layer.weight)
-            nn.init.zeros_(linear_layer.bias)
+            hidden_w_init(linear_layer.weight)
+            hidden_b_init(linear_layer.bias)
             layers.append(linear_layer)
-            layers.append(nn.ReLU())  # nn.LeakyReLU(0.01)
+            layers.append(hidden_nonlinearity)  # nn.LeakyReLU(0.01)
 
         # output layer
         output_layer = nn.Linear(in_features=hidden_sizes[-1],
-                                 out_features=num_actions)
-        nn.init.xavier_normal_(output_layer.weight)
-        nn.init.zeros_(output_layer.bias)
+                                 out_features=self._num_actions,
+                                 bias=output_bias)
+        output_w_inits(output_layer.weight)
+        output_b_inits(output_layer.bias)
         layers.append(output_layer)
+        if output_nonlinearities:
+            layers.append(output_nonlinearities)
 
         self.layers = nn.Sequential(*layers)
 
@@ -73,7 +88,7 @@ class DQN(object):
         self.device = device
 
         # Determine network type
-        self.Q = QNetwork(state_dim=state_dim, num_actions=num_actions, hidden_sizes=hidden_sizes).to(self.device)
+        self.Q = QNetwork(input_dim=state_dim, output_dim=num_actions, hidden_sizes=hidden_sizes).to(self.device)
         self.Q_target = copy.deepcopy(self.Q)
         self.Q_optimizer = getattr(torch.optim, optimizer)(self.Q.parameters(), **optimizer_parameters)
         self.discount = discount
@@ -205,16 +220,16 @@ class DQN(object):
         return fig
 
 class DuelingQNetwork(nn.Module):
-    def __init__(self, state_dim, num_actions, hidden_sizes=[256, 256]):
-        super(DuelingQNetwork, self).__init__()
+    def __init__(self, input_dim, output_dim, hidden_sizes=[256, 256]):
+        super().__init__()
 
         self._hidden_sizes = hidden_sizes
-        self._state_dim = state_dim
-        self._num_actions = num_actions
+        self._state_dim = input_dim
+        self._num_actions = output_dim
 
         layers = []
         # hidden layers
-        for prev_size, size in zip([state_dim] + hidden_sizes[:-1],
+        for prev_size, size in zip([self._state_dim] + hidden_sizes[:-1],
                                     hidden_sizes):
             linear_layer = nn.Linear(in_features=prev_size,
                                         out_features=size)
@@ -229,7 +244,7 @@ class DuelingQNetwork(nn.Module):
         self.value_output_layer = nn.Linear(in_features=hidden_sizes[-1] // 2,
                                     out_features=1)
         self.adv_output_layer = nn.Linear(in_features=hidden_sizes[-1] - hidden_sizes[-1] // 2,
-                                    out_features=num_actions)
+                                    out_features=self._num_actions)
 
     def forward(self, state):
         output = self.layers(state)
@@ -265,7 +280,7 @@ class DuelingDQN(object):
         self.device = device
 
         # Determine network type
-        self.Q = DuelingQNetwork(state_dim=state_dim, num_actions=num_actions, hidden_sizes=hidden_sizes).to(self.device)
+        self.Q = DuelingQNetwork(input_dim=state_dim, output_dim=num_actions, hidden_sizes=hidden_sizes).to(self.device)
         self.Q_target = copy.deepcopy(self.Q)
         self.Q_optimizer = getattr(torch.optim, optimizer)(self.Q.parameters(), **optimizer_parameters)
         self.discount = discount

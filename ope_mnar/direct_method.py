@@ -1,3 +1,5 @@
+"""Note: currently the code is only compatible with continues state space and discrete action space"""
+
 import numpy as np
 import pandas as pd
 import os
@@ -1220,16 +1222,14 @@ class FQE(SimulationBase):
                                                random_state=seed)
         else:
             # NN
-            self.model = QNetwork(state_dim=self.state_dim,
-                                  num_actions=self.num_actions,
-                                  hidden_sizes=hidden_sizes)
-            self.target_model = QNetwork(state_dim=self.state_dim,
-                                  num_actions=self.num_actions,
-                                  hidden_sizes=hidden_sizes)
-            # self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
-            # self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer,
-            #                                                  step_size=100,
-            #                                                  gamma=0.99)
+            self.model = QNetwork(input_dim=self.state_dim,
+                                  output_dim=self.num_actions,
+                                  hidden_sizes=hidden_sizes,
+                                  hidden_nonlinearity=nn.ReLU())
+            self.target_model = QNetwork(input_dim=self.state_dim,
+                                  output_dim=self.num_actions,
+                                  hidden_sizes=hidden_sizes,
+                                  hidden_nonlinearity=nn.ReLU())
 
         # state features shuold be scaled first
         self._train(max_iter=max_iter,
