@@ -19,8 +19,6 @@ class StateActionVisitationModel(nn.Module):
         self.hidden_sizes = hidden_sizes
         self.input_dim = state_dim + action_dim
 
-        self.seed = 0
-
         # build network structure
         layers = []
 
@@ -57,16 +55,6 @@ class StateActionVisitationModel(nn.Module):
         out = torch.log(1.0001 + torch.exp(out))
         return out
 
-    # def batch_prediction(self, inputs, batch_size=int(1024 * 8 * 16)):
-    #     with torch.no_grad():
-    #         if inputs.shape[0] > batch_size:
-    #             n_batch = inputs.shape[0] // batch_size + 1
-    #             input_batches = np.array_split(inputs, n_batch)
-    #             return np.vstack(
-    #                 [self.forward(dat).numpy() for dat in input_batches])
-    #         else:
-    #             return self.forward(inputs).numpy()
-
 
 class StateActionVisitationExpoLinear(nn.Module):
 
@@ -74,7 +62,6 @@ class StateActionVisitationExpoLinear(nn.Module):
         super().__init__()
 
         self.input_dim = input_dim
-        self.seed = 0
 
         layers = []
         layer = nn.Linear(in_features=self.input_dim, out_features=1)

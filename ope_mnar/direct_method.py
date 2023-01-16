@@ -107,7 +107,7 @@ class LSTDQ(SimulationBase):
             tmp['id'] = np.repeat(k, nrows)
             if eval_Q:
                 Q_list = [
-                    self.Q(S=S, A=A, predictor=False)
+                    self.Q(states=S, actions=A, predictor=False)
                     for S, A in zip(nonterminal_state_list, action_list)
                 ]  # same length as action_list
             if len(action_list) < nrows:
@@ -211,36 +211,36 @@ class LSTDQ(SimulationBase):
     ## calculate Q and value function
     ##################################
 
-    def _predictor(self, S):
+    def _predictor(self, states):
         """
         Return value of basis functions given states and actions. 
 
         Args:
-            S (np.ndarray): array of states, dimension (n, state_dim)
+            states (np.ndarray): array of states, dimension (n, state_dim)
 
         Returns:  
             output (np.ndarray): array of basis values, dimension (n, para_dim)
         """
-        S = np.array(S)  # (n,S_dim)
-        if len(S.shape) == 1:
-            S = np.expand_dims(S, axis=0)  # (n,S_dim)
-        S = self.scaler.transform(S)
+        states = np.array(states)  # (n,S_dim)
+        if len(states.shape) == 1:
+            states = np.expand_dims(states, axis=0)  # (n,S_dim)
+        states = self.scaler.transform(states)
         if self.bspline:
-            S = S.T  # (S_dim,n)
+            states = states.T  # (S_dim,n)
             if self.product_tensor:
                 output = np.vstack(
                     list(
                         map(partial(np.prod, axis=0),
                             (product(*[
                                 np.array([func(s) for func in f])
-                                for f, s in zip(self.bspline, S)
+                                for f, s in zip(self.bspline, states)
                             ],
                                      repeat=1)))))  # ((L-d)^S_dim, n)
                 output *= self.basis_scale_factor  #
             else:
                 output = np.concatenate([
                     np.array([func(s) for func in f])
-                    for f, s in zip(self.bspline, S)
+                    for f, s in zip(self.bspline, states)
                 ])  # ((L-d)*S_dim, n)
             output = output.T  # (n, para_dim)
             output *= self.basis_scale_factor
@@ -248,53 +248,53 @@ class LSTDQ(SimulationBase):
         else:
             raise NotImplementedError
 
-    def Q(self, S, A, predictor=False):
+    def Q(self, states, actions, predictor=False):
         """
         Return the value of Q-function given states and actions. 
 
         Args:
-            S (np.ndarray) : array of states, dimension (n, state_dim)
-            A (np.ndarray) : array of actions, dimension (n, )
+            states (np.ndarray) : array of states, dimension (n, state_dim)
+            actions (np.ndarray) : array of actions, dimension (n, )
             predictor (bool) : if True, return the value of each basis function
 
         Returns:
             Q_est (np.ndarray): Q-function values, dimension (n, )
         """
-        S = np.array(S)  # (n,S_dim)
-        if len(S.shape) == 1:
-            S = np.expand_dims(S, axis=0)  # (n,S_dim)
+        states = np.array(states)  # (n,S_dim)
+        if len(states.shape) == 1:
+            states = np.expand_dims(states, axis=0)  # (n,S_dim)
             scaler_output = True
         else:
             scaler_output = False
 
-        output = self._predictor(S=S)
+        output = self._predictor(states=states)
         if predictor:
             return output
 
-        A = np.array(A).astype(np.int8).squeeze()  # (n,)
+        actions = np.array(actions).astype(np.int8).squeeze()  # (n,)
         Q_est = np.zeros(shape=(len(output), ))
         for a in range(self.num_actions):
-            Q_est = Q_est + np.matmul(output, self.para[a]) * (a == A)
+            Q_est = Q_est + np.matmul(output, self.para[a]) * (a == actions)
         return Q_est if not scaler_output else Q_est.item()
 
-    def V(self, S, policy):
+    def V(self, states, policy):
         """
         Return the value of states under some policy. 
 
         Args:
-            S (np.ndarray) : array of states, dimension (n,state_dim)
+            states (np.ndarray) : array of states, dimension (n,state_dim)
             policy (callable) : the policy to be evaluated
 
         Returns:
             V_est (np.ndarray): array of values, dimension (n,)
         """
-        S = np.array(S)
-        if len(S.shape) == 1:
-            S = np.expand_dims(S, axis=0)  # (n,S_dim)
+        states = np.array(states)
+        if len(states.shape) == 1:
+            states = np.expand_dims(states, axis=0)  # (n,S_dim)
             scaler_output = True
         else:
             scaler_output = False
-        U_mat = self._U(S=S, policy=policy)
+        U_mat = self._U(states=states, policy=policy)
         est_beta = []
         for i in self.para.values():
             est_beta.extend(i)
@@ -320,59 +320,59 @@ class LSTDQ(SimulationBase):
             else:
                 S_inits = self.sample_initial_states(size=MC_size,
                                                      from_data=True)
-        return np.mean(self.V(policy=policy, S=S_inits))
+        return np.mean(self.V(states=S_inits, policy=policy))
 
     ############################
     ## inference on beta
     ############################
-    def _Xi(self, S, A):
+    def _Xi(self, states, actions):
         """
         Return Xi given states and actions. 
 
         Args:
-            S (np.ndarray) : An array of states, dimension (n, state_dim)
-            A (np.ndarray) : An array of actions, dimension (n, )
+            states (np.ndarray) : An array of states, dimension (n, state_dim)
+            actions (np.ndarray) : An array of actions, dimension (n, )
 
         Returns:
             xi (np.ndarray): An array of Xi values, dimension (n, para_dim * num_actions)
         """
-        S = np.array(S)  # (n, S_dim)
-        if len(S.shape) == 1:
-            S = np.expand_dims(S, axis=0)  # (n, S_dim)
-        nrows = S.shape[0]
-        predictor = self._predictor(S=S)  # (n, para_dim)
+        states = np.array(states)  # (n, S_dim)
+        if len(states.shape) == 1:
+            states = np.expand_dims(states, axis=0)  # (n, S_dim)
+        nrows = states.shape[0]
+        predictor = self._predictor(states=states)  # (n, para_dim)
 
-        A = np.array(A).astype(np.int8).reshape(nrows)  # (n,)
+        actions = np.array(actions).astype(np.int8).reshape(nrows)  # (n,)
         xi = np.tile(predictor,
                      reps=self.num_actions)  # (n, para_dim * num_actions)
-        action_mask = np.repeat(np.eye(self.num_actions)[A],
+        action_mask = np.repeat(np.eye(self.num_actions)[actions],
                                 repeats=self.para_dim,
                                 axis=1)  # (n, para_dim * num_actions)
         return xi * action_mask
 
-    def _U(self, S, policy):
+    def _U(self, states, policy):
         """
         Return U given states and policy. 
 
         Args:
-            S (np.ndarray) : array of states, dimension (n, state_dim)
+            states (np.ndarray) : array of states, dimension (n, state_dim)
             policy (callable) : policy function that outputs actions with dimension (n, *)
 
         Returns
             U (np.ndarray): array of U values, dimension (n, para_dim * num_actions)
         """
-        S = np.array(S)
-        if len(S.shape) == 1:
-            S = np.expand_dims(S, axis=0)  # (n,S_dim)
+        states = np.array(states)
+        if len(states.shape) == 1:
+            states = np.expand_dims(states, axis=0)  # (n,S_dim)
         if self.vectorized_env:
-            action = policy(S)
+            action = policy(states)
         else:
-            action = np.array([policy(s) for s in S])
+            action = np.array([policy(s) for s in states])
         is_stochastic = action.shape[1] > 1
         if not is_stochastic:
-            return self._Xi(S=S, A=action)
+            return self._Xi(states=states, actions=action)
         else:
-            predictor = self._predictor(S=S)
+            predictor = self._predictor(states=states)
             U = np.tile(predictor,
                         reps=self.num_actions)  # (n, para_dim * num_actions)
             policy_mask = np.repeat(action, repeats=self.para_dim,
@@ -481,12 +481,12 @@ class LSTDQ(SimulationBase):
         del training_buffer
         print(f'pseudo sample size: {inverse_wts.sum()}')
 
-        Xi_mat = self._Xi(S=obs, A=actions) # (n, para_dim*num_actions)
+        Xi_mat = self._Xi(states=obs, actions=actions) # (n, para_dim*num_actions)
         self._Xi_mat = Xi_mat
 
         if dropout_prob_concat:
             dropout_prob_concat = np.concatenate(dropout_prob_concat)
-        U_mat = self._U(S=next_obs, policy=policy)
+        U_mat = self._U(states=next_obs, policy=policy)
 
         mat1 = np.matmul(Xi_mat.T, inverse_wts * (Xi_mat - self.gamma * U_mat))
         mat2 = np.matmul(Xi_mat.T, inverse_wts * rewards)
@@ -547,8 +547,8 @@ class LSTDQ(SimulationBase):
         if verbose:
             print('Start calculating Omega...')
         proj_td = inverse_wts * (rewards +
-             self.gamma * self.V(S=next_obs, policy=policy).reshape(-1, 1) -
-             self.Q(S=obs, A=actions).reshape(-1, 1)) * Xi_mat  # (n, para_dim*num_actions)
+             self.gamma * self.V(states=next_obs, policy=policy).reshape(-1, 1) -
+             self.Q(states=obs, actions=actions).reshape(-1, 1)) * Xi_mat  # (n, para_dim*num_actions)
         output = np.matmul(
             proj_td.T, proj_td)  # (para_dim*num_actions, para_dim*num_actions)
         self.Omega = output / self.total_T_ipw
@@ -695,12 +695,12 @@ class LSTDQ(SimulationBase):
                 float)  # (total_T, total_T)
             del training_buffer
             
-            Xi = self._Xi(S=obs, A=actions)  # (n, para_dim*num_actions)
+            Xi = self._Xi(states=obs, actions=actions)  # (n, para_dim*num_actions)
             proj_td = np.matmul(
                 inverse_wts_mat *
                 (rewards +
-                self.gamma * self.V(S=next_obs, policy=policy).reshape(-1, 1) -
-                self.Q(S=obs, A=actions).reshape(-1, 1)), Xi
+                self.gamma * self.V(states=next_obs, policy=policy).reshape(-1, 1) -
+                self.Q(states=obs, actions=actions).reshape(-1, 1)), Xi
             )  # (n, para_dim*num_actions), np.sqrt(inverse_wts_mat) or inverse_wts_mat?
             output = np.matmul(
                 proj_td.T, proj_td)  # (para_dim*num_actions, para_dim*num_actions)
@@ -714,7 +714,7 @@ class LSTDQ(SimulationBase):
     #####################################
 
     def _sigma(self,
-               S,
+               states,
                policy,
                ipw=False,
                estimate_missing_prob=False,
@@ -728,7 +728,7 @@ class LSTDQ(SimulationBase):
         Calculate sigma.
 
         Args:
-            S (np.ndarray) : array of states, dimension (n, state_dim)
+            states (np.ndarray) : array of states, dimension (n, state_dim)
             policy (callable): the target policy to evaluate that outputs actions with dimension (n, *)
             ipw (bool): if True, use inverse weighting to adjust for missing data
             estimate_missing_prob (bool): if True, use estimated missing probability, otherwise, use ground truth (only for simulation)
@@ -746,9 +746,9 @@ class LSTDQ(SimulationBase):
             assert hasattr(
                 self, 'propensity_pred'
             ), 'please call function self.estimate_missing_prob() first'
-        S = np.array(S)  # (n,S_dim)
-        if len(S.shape) == 1:
-            S = np.expand_dims(S, axis=0)  # (n,S_dim)
+        states = np.array(states)  # (n,S_dim)
+        if len(states.shape) == 1:
+            states = np.expand_dims(states, axis=0)  # (n,S_dim)
             scaler_output = True
         else:
             scaler_output = False
@@ -761,7 +761,7 @@ class LSTDQ(SimulationBase):
                         grid_search=grid_search,
                         verbose=verbose,
                         subsample_index=subsample_index)
-        U_mat = self._U(S=S, policy=policy)  # (n, S_dim)
+        U_mat = self._U(states=states, policy=policy)  # (n, S_dim)
         sigma_sq_list = []
         for u in U_mat:
             sigma_sq = reduce(np.matmul, [
@@ -774,7 +774,7 @@ class LSTDQ(SimulationBase):
         return sigma_sq_arr.item() if scaler_output else sigma_sq_arr
 
     def inference(self,
-                  S,
+                  states,
                   policy,
                   alpha=0.05,
                   ipw=False,
@@ -789,7 +789,7 @@ class LSTDQ(SimulationBase):
         Calculate confidence interval for point-wise value. 
 
         Args:
-            S (np.ndarray) : array of states, dimension (n, state_dim)
+            states (np.ndarray) : array of states, dimension (n, state_dim)
             policy (callable): the target policy to evaluate that outputs actions with dimension (n, *)
             alpha (float): significance level, default is 0.05
             ipw (bool): if True, use inverse weighting to adjust for missing data
@@ -809,14 +809,14 @@ class LSTDQ(SimulationBase):
             assert hasattr(
                 self, 'propensity_pred'
             ), 'please call function self.estimate_missing_prob() first'
-        S = np.array(S)  # (n,S_dim)
-        if len(S.shape) == 1:
-            S = np.expand_dims(S, axis=0)  # (n,S_dim)
+        states = np.array(states)  # (n,S_dim)
+        if len(states.shape) == 1:
+            states = np.expand_dims(states, axis=0)  # (n,S_dim)
             scaler_output = True
         else:
             scaler_output = False
         total_T = self.total_T_ipw  # self.total_T_ipw, self.total_T
-        sigma_sq = self._sigma(S=S,
+        sigma_sq = self._sigma(states=states,
                                policy=policy,
                                ipw=ipw,
                                estimate_missing_prob=estimate_missing_prob,
@@ -826,7 +826,7 @@ class LSTDQ(SimulationBase):
                                grid_search=grid_search,
                                subsample_index=subsample_index,
                                verbose=verbose)  # estimate the beta
-        V_est = self.V(S=S, policy=policy)
+        V_est = self.V(states=states, policy=policy)
         if not scaler_output:
             V_est = V_est.reshape(-1, 1)
         lower_bound = V_est - norm.ppf(1 - alpha / 2) * (sigma_sq**
@@ -890,7 +890,7 @@ class LSTDQ(SimulationBase):
                                                      from_data=True)
             else:
                 S_inits = self._initial_obs
-        U = self._U(S=S_inits,
+        U = self._U(states=S_inits,
                     policy=policy)  # (MC_size, para_dim * num_actions)
         U_int = np.mean(U, axis=0).reshape(-1,
                                            1)  # (para_dim * num_actions, 1)
@@ -977,7 +977,7 @@ class LSTDQ(SimulationBase):
             target_policy = self.target_policy
         if S_inits is None:
             S_inits = self._initial_obs
-        return self.V(S_inits)
+        return self.V(states=S_inits, policy=target_policy)
 
     def get_value(self, target_policy=None, S_inits=None, MC_size=None):
         """Wrapper function of V_int
@@ -1012,7 +1012,7 @@ class LSTDQ(SimulationBase):
                 S_inits = self._initial_obs
         if target_policy is None:
             target_policy = self.target_policy
-        U = self._U(S=S_inits, policy=target_policy)  # (MC_size, para_dim * num_actions)
+        U = self._U(states=S_inits, policy=target_policy)  # (MC_size, para_dim * num_actions)
         U_int = np.mean(U, axis=0).reshape(-1,1)  # (para_dim * num_actions, 1)
 
         print("Getting value point estimates")
@@ -1053,7 +1053,7 @@ class LSTDQ(SimulationBase):
 
         states = np.vstack(obs_list)  # (total_T, S_dim)
         actions = np.vstack(action_list)  # (total_T, 1)
-        Q_est = self.Q(S=states, A=actions).squeeze()
+        Q_est = self.Q(states=states, actions=actions).squeeze()
 
         # generate trajectories under the target policy
         init_states = states # self._initial_obs
@@ -1135,7 +1135,7 @@ class LSTDQ(SimulationBase):
                 )
                 ax[1,a].invert_yaxis()
                 ax[1,a].set_title(f'empirical Q (action={a})')
-            plt.savefig('Q_func_heatplot.png')
+            plt.savefig('./output/Qfunc_heatplot.png')
 
 
 
@@ -1151,7 +1151,8 @@ class FQE(SimulationBase):
                  horizon=None,
                  discount=0.8,
                  eval_env=None,
-                 device=None):
+                 device=None,
+                 seed=0):
         """
         Args:
             env (gym.Env): dynamic environment
@@ -1173,6 +1174,11 @@ class FQE(SimulationBase):
         else:
             self.device = device
 
+        self.seed = seed
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed(seed)
+
     def estimate_Q(
             self,
             target_policy,
@@ -1185,17 +1191,17 @@ class FQE(SimulationBase):
             batch_size=128,
             epoch=20000,
             patience=10,
-            seed=0,
+            # seed=0,
             scaler="Standard",
             print_freq=10,
-            verbose=0,
+            verbose=False,
             # other RF arguments
             **kwargs):
 
-        self.replay_buffer = SimpleReplayBuffer(trajs=self.masked_buffer,
-                                                seed=seed)
+        self.replay_buffer = SimpleReplayBuffer(trajs=self.masked_buffer, seed=self.seed)                   
         self.target_policy = target_policy
         self.use_RF = use_RF
+        self.Q_func_class = 'nn' if not use_RF else 'rf'
         self.lr = lr
 
         if scaler == "NormCdf":
@@ -1218,8 +1224,8 @@ class FQE(SimulationBase):
         if use_RF:
             self.model = RandomForestRegressor(**kwargs,
                                                n_jobs=-1,
-                                               verbose=0,
-                                               random_state=seed)
+                                               verbose=False,
+                                               random_state=self.seed)
         else:
             # NN
             self.model = QNetwork(input_dim=self.state_dim,
@@ -1247,7 +1253,7 @@ class FQE(SimulationBase):
                epoch,
                patience,
                print_freq=10,
-               verbose=0):
+               verbose=False):
         state = self.replay_buffer.states
         action = self.replay_buffer.actions
         reward = self.replay_buffer.rewards
@@ -1294,7 +1300,7 @@ class FQE(SimulationBase):
                     state, action, reward, next_state = transitions[:4]
                     pi_next_state = self.target_policy.get_action(next_state) # input should on the original scale
                     pi_next_state_prob = self.target_policy.get_action_prob(
-                        next_state)  # input should on the original scale
+                        next_state)  # input should be on the original scale
                     # standardize the input
                     state = self.scaler.transform(state)
                     next_state = self.scaler.transform(next_state)
@@ -1362,7 +1368,7 @@ class FQE(SimulationBase):
 
             target_diff = abs(target_Q - old_target_Q).mean() / (abs(old_target_Q).mean() + 1e-6)
             
-            if verbose >= 1 and itr % print_freq == 0:
+            if verbose and itr % print_freq == 0:
                 action_init_states = self.target_policy.get_action(
                     self._initial_obs)
                 values = self.Q(self._initial_obs, action_init_states) # call model.eval() inside
@@ -1381,35 +1387,35 @@ class FQE(SimulationBase):
         for param, target_param in zip(self.model.parameters(), self.target_model.parameters()):
             target_param.data.copy_(param.data)
 
-    def Q(self, S, A=None):
-        if S.ndim == 1:
-            S = np.expand_dims(S, 1)
-        S = self.scaler.transform(S)
+    def Q(self, states, actions=None):
+        if states.ndim == 1:
+            states = np.expand_dims(states, 1)
+        states = self.scaler.transform(states)
         if self.use_RF:
-            Q_values = self.model.predict(S)
-            if A is not None:
-                return np.take_along_axis(arr=Q_values, indices=A.reshape(-1,1), axis=1)
+            Q_values = self.model.predict(states)
+            if actions is not None:
+                return np.take_along_axis(arr=Q_values, indices=actions.reshape(-1,1), axis=1)
             else:
                 return Q_values
         else:
-            S = torch.Tensor(S).to(self.device)
+            states = torch.Tensor(states).to(self.device)
 
             self.model.eval()
-            Q_values = self.model(S)
+            Q_values = self.model(states)
 
-            if A is not None:
-                A = torch.LongTensor(A.reshape(-1,1)).to(self.device)
-                return Q_values.gather(dim=1, index=A).detach().numpy()
+            if actions is not None:
+                actions = torch.LongTensor(actions.reshape(-1,1)).to(self.device)
+                return Q_values.gather(dim=1, index=actions).detach().numpy()
             else:
                 return Q_values.detach().numpy()
 
-    def V(self, S, policy=None):
-        if S.ndim == 1:
-            S = np.expand_dims(S, 1)
+    def V(self, states, policy=None):
+        if states.ndim == 1:
+            states = np.expand_dims(states, 1)
         if policy is None:
             policy = self.target_policy
-        action_probs = policy.get_action_prob(S)
-        Q_values = self.Q(S, A=None)  # (n, num_actions)
+        action_probs = policy.get_action_prob(states)
+        Q_values = self.Q(states=states, actions=None)  # (n, num_actions)
         return np.sum(Q_values * action_probs, axis=1)
 
     def get_state_values(self, target_policy=None, S_inits=None):
@@ -1417,10 +1423,10 @@ class FQE(SimulationBase):
             target_policy = self.target_policy
         if S_inits is None:
             S_inits = self._initial_obs
-        return self.V(S_inits)
+        return self.V(states=S_inits, policy=target_policy)
 
     def get_value(self, target_policy=None, S_inits=None, MC_size=None):
-        """Wrapper function of V_int
+        """Calculate integrated value
         
         Args:
             target_policy (callable): target policy to be evaluated.
@@ -1431,102 +1437,15 @@ class FQE(SimulationBase):
         Returns:
             est_V (float): integrated value of target policy
         """
-        if MC_size is None and S_inits is None:
-            S_inits = self._initial_obs
+        if S_inits is None:
+            if MC_size is None:
+                S_inits = self._initial_obs
+            else:
+                S_inits = self.sample_initial_states(size=MC_size,
+                                                     from_data=True)
         if target_policy is None:
             target_policy = self.target_policy
-        est_V = self.V_int(policy=target_policy,
-                           MC_size=MC_size,
-                           S_inits=S_inits)
-        return est_V
 
-    def validate_Q(self, grid_size=10, visualize=False):
-        self.grid = []
-        self.idx2states = collections.defaultdict(list)
-        states = self.replay_buffer.states
-        actions = self.replay_buffer.actions
-        Q_est = self.Q(S=states, A=actions).squeeze()
-
-        # generate trajectories under the target policy
-        init_states = states # self._initial_obs
-        init_actions = actions # self._init_actions
-        old_num_envs = self.eval_env.num_envs
-        eval_size = len(init_states)
-
-        self.eval_env.num_envs = eval_size
-        self.eval_env.observation_space = batch_space(
-            self.eval_env.single_observation_space,
-            n=self.eval_env.num_envs)
-        self.eval_env.action_space = Tuple(
-            (self.eval_env.single_action_space, ) * self.eval_env.num_envs)
-
-        trajectories = self.gen_batch_trajs(
-            policy=self.target_policy.policy_func,
-            seed=None,
-            S_inits=init_states,
-            A_inits=init_actions,
-            burn_in=0,
-            evaluation=True)
-        rewards_history = self.eval_env.rewards_history * \
-                    self.eval_env.states_history_mask[:,
-                                                      :self.eval_env.rewards_history.shape[1]]
-        Q_ref = np.matmul(
-                    rewards_history,
-                    self.gamma**np.arange(
-                        start=0, stop=rewards_history.shape[1]).reshape(-1, 1)).squeeze()
-        # recover eval_env
-        self.eval_env.num_envs = old_num_envs
-        self.eval_env.observation_space = batch_space(
-            self.eval_env.single_observation_space,
-            n=self.eval_env.num_envs)
-        self.eval_env.action_space = Tuple(
-            (self.eval_env.single_action_space, ) * self.eval_env.num_envs)
-
-        discretized_states = np.zeros_like(states)
-        for i in range(self.state_dim):
-            disc_bins = np.linspace(start=self.low[i] - 0.1, stop=self.high[i] + 0.1, num=grid_size + 1)
-            # disc_bins = np.quantile(a=states[:,i], q=np.linspace(0, 1, grid_size + 1))
-            # disc_bins[0] -= 0.1
-            # disc_bins[-1] += 0.1
-            self.grid.append(disc_bins)
-            discretized_states[:,i] = np.digitize(states[:,i], bins=disc_bins) - 1
-        discretized_states = list(map(tuple, discretized_states.astype('int')))
-        for ds, s, a, q, qr in zip(discretized_states, states, actions, Q_est, Q_ref):
-            self.idx2states[ds].append(np.concatenate([s, [a], [q], [qr]]))
-
-        # only for 2D state, binary action
-        Q_mat = np.zeros(shape=(self.num_actions, grid_size, grid_size))
-        Q_ref_mat = np.zeros(shape=(self.num_actions, grid_size, grid_size))
-        for k, v in self.idx2states.items():
-            v = np.array(v)
-            if any(v[:,self.state_dim] == 0):
-                Q_mat[0][k[0]][k[1]] = np.mean(v[v[:,self.state_dim] == 0,self.state_dim+1])
-                Q_ref_mat[0][k[0]][k[1]] = np.mean(v[v[:,self.state_dim] == 0,self.state_dim+2])
-            if any(v[:,self.state_dim] == 1):
-                Q_mat[1][k[0]][k[1]] = np.mean(v[v[:,self.state_dim] == 1,self.state_dim+1])
-                Q_ref_mat[1][k[0]][k[1]] = np.mean(v[v[:,self.state_dim] == 1,self.state_dim+2])
-
-        if visualize:
-
-            fig, ax = plt.subplots(2, self.num_actions, figsize=(5*self.num_actions,8))
-            for a in range(self.num_actions):
-                sns.heatmap(
-                    Q_mat[a], 
-                    cmap="YlGnBu",
-                    linewidth=1,
-                    ax=ax[0,a]
-                )
-                ax[0,a].invert_yaxis()
-                ax[0,a].set_title(f'estimated Q (action={a})')
-            for a in range(self.num_actions):
-                sns.heatmap(
-                    Q_ref_mat[a], 
-                    cmap="YlGnBu",
-                    linewidth=1,
-                    ax=ax[1,a]
-                )
-                ax[1,a].invert_yaxis()
-                ax[1,a].set_title(f'empirical Q (action={a})')
-            plt.savefig('Q_func_heatplot.png')
+        return np.mean(self.get_state_values(target_policy=target_policy, S_inits=S_inits))
 
 
