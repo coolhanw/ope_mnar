@@ -2,18 +2,13 @@ import os
 import numpy as np
 import pickle
 from collections import defaultdict, Counter
-import copy
 import pathlib
 import gc
-import dowel
-from dowel import logger, tabular
-import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import time
 
 from direct_method import LSTDQ
-from utils import SimEnv, VectorSimEnv
 
 
 def train_Q_func(
@@ -26,7 +21,6 @@ def train_Q_func(
         knots=None,
         total_N=None,
         burn_in=0,
-        use_vector_env=True,
         target_policy=None,
         export_dir=None,
         scale='NormCdf',
@@ -34,7 +28,6 @@ def train_Q_func(
         discount=0.5,
         seed=None,
         S_inits=None,
-        S_inits_kwargs={},
         ipw=False,
         weight_curr_step=True,
         estimate_missing_prob=False,
@@ -53,9 +46,7 @@ def train_Q_func(
         model_suffix='',
         prob_lbound=1e-3,
         eval_env=None,
-        filename_data=None,
-        filename_train=None,
-        **kwargs):
+        filename_train=None):
     """
     Args:
         T (int): maximum horizon of observed trajectories
@@ -96,7 +87,6 @@ def train_Q_func(
         eval_env (gym.Env): dynamic environment to evaluate the policy, if not specified, use env
         filename_data (str): path to the observed data (csv file)
         filename_train (str): path to the training results
-        kwargs: additional inputs passed to the environment
 
     Returns:
         if_converge (bool)
@@ -104,13 +94,10 @@ def train_Q_func(
     
     if export_dir:
         pathlib.Path(os.path.join(export_dir)).mkdir(parents=True, exist_ok=True)
-    # generate data and basis spline
-    if env is None:
-        if use_vector_env:
-            env = VectorSimEnv(num_envs=n, T=T, **kwargs)
-        else:
-            env = SimEnv(T=T, **kwargs)
+    assert env is not None, 'Please specify the environment'
     env.T = T
+    if env.is_vector_env:
+        env.num_envs = n
     agent = LSTDQ(env=env,
                        n=n,
                        scale=scale,
@@ -119,6 +106,7 @@ def train_Q_func(
                        eval_env=eval_env,
                        basis_scale_factor=basis_scale_factor)
     agent.dropout_obs_count_thres = max(dropout_obs_count_thres - 1,0) # -1 because this is the index
+    # generate data and basis spline
     agent.gen_masked_buffer(policy=agent.obs_policy,
                             S_inits=S_inits,
                             total_N=total_N,
@@ -128,11 +116,6 @@ def train_Q_func(
     print(f'missing rate: {agent.missing_rate}')
     print(f'n: {agent.n}')
     print(f'total_N: {agent.total_N}')
-    if False:
-        fig, ax = plt.subplots()
-        sns.scatterplot(x=agent._initial_obs[:,0], y=agent._initial_obs[:,0], ax=ax)  
-        plt.savefig(os.path.join(export_dir, f"init_obs_T_{T}_n_{n}.png"))
-        plt.close()
 
     spline_degree = d
     if not L:
@@ -259,15 +242,13 @@ def get_target_value_multi(T=25,
                           filename_true_value=None,
                           export_dir=None,
                           value_import_dir=None,
-                          figure_name=None,
                           scale="NormCdf",
                           product_tensor=True,
                           discount=0.5,
                           eval_env=None,
                           filename_value='value',
                           eval_S_inits_dict=None,
-                          eval_seed=None,
-                          **kwargs):
+                          eval_seed=None):
     """Get the value of target policy under multiple initial state distributions"""
 
     if export_dir:
@@ -276,12 +257,10 @@ def get_target_value_multi(T=25,
         filename_train = os.path.join(import_dir, filename_train)
     with open(filename_train, 'rb') as outfile_train:
         output = pickle.load(outfile_train)
-    if env is None:
-        if use_vector_env:
-            env = VectorSimEnv(num_envs=n, T=T, **kwargs)
-        else:
-            env = SimEnv(T=T, **kwargs)
+    assert env is not None, 'Please specify the environment'
     env.T = T
+    if env.is_vector_env:
+        env.num_envs = n
     b = LSTDQ(env=env,
                    n=n,
                    scale=scale,
@@ -388,22 +367,22 @@ def get_target_value_multi(T=25,
     if use_vector_env:
         for k in eval_S_inits_dict.keys():
             value_store[t][k]['actual_value'] = true_value[k]
-            est_value = b.V(S=eval_S_inits_dict[k], policy=target_policy)
+            est_value = b.V(states=eval_S_inits_dict[k], policy=target_policy)
             value_store[t][k]['est_value'] = est_value.squeeze().tolist()
             for a in range(action_levels):
                 value_store[t][k][f'actual_Q_{a}'] = true_Q[k][a]
                 A_inits = np.repeat(a, repeats=len(eval_S_inits_dict[k]))
-                est_Q = b.Q(S=eval_S_inits_dict[k], A=A_inits)
+                est_Q = b.Q(states=eval_S_inits_dict[k], actions=A_inits)
                 value_store[t][k][f'est_Q_{a}'] = est_Q.squeeze().tolist()
     else:
         for k in eval_S_inits_dict.keys():
             value_store[t][k]['actual_value'] = true_value[k]
-            est_value = b.V(S=eval_S_inits_dict[k], policy=target_policy)
+            est_value = b.V(states=eval_S_inits_dict[k], policy=target_policy)
             value_store[t][k]['est_value'] = est_value.squeeze().tolist()
             for a in range(action_levels):
                 value_store[t][k][f'actual_Q_{a}'] = true_Q[k][a]
                 A_inits = np.repeat(a, repeats=len(eval_S_inits_dict[k]))
-                est_Q = b.Q(S=eval_S_inits_dict[k], A=A_inits)
+                est_Q = b.Q(states=eval_S_inits_dict[k], actions=A_inits)
                 value_store[t][k][f'est_Q_{a}'] = est_Q.squeeze().tolist()
 
     for k in eval_S_inits_dict.keys():
@@ -436,7 +415,6 @@ def eval_V_int_CI_multi(
         knots=None,
         total_N=None,
         burn_in=0,
-        use_vector_env=True,
         ipw=False,
         weight_curr_step=True,
         estimate_missing_prob=False,
@@ -470,8 +448,7 @@ def eval_V_int_CI_multi(
         eval_env=None,
         eval_S_inits_dict=None,
         eval_seed=1,
-        verbose_freq=1,
-        **kwargs):
+        verbose_freq=1):
     """Calculate the CI for integrated value for multiple initial state distribution."""
 
     if value_import_dir:
@@ -494,12 +471,10 @@ def eval_V_int_CI_multi(
         ipw = False
         estimate_missing_prob = False
 
-    if env is None:
-        if use_vector_env:
-            env = VectorSimEnv(num_envs=n, T=T, **kwargs)
-        else:
-            env = SimEnv(T=T, **kwargs)
+    assert env is not None, 'Please specify the environment'
     env.T = T
+    if env.is_vector_env:
+        env.num_envs = n
     agent = LSTDQ(env=env,
                        n=n,
                        scale=scale,
@@ -684,7 +659,7 @@ def eval_V_int_CI_multi(
             
             est_V = inference_dict['value']
             est_V_std = inference_dict['std']
-            pointwise_V_est = agent.V(S=eval_S_inits, policy=target_policy).squeeze()
+            pointwise_V_est = agent.V(states=eval_S_inits, policy=target_policy).squeeze()
             pointwise_mse = np.mean((pointwise_V_est - true_value[k]) ** 2)
             abnormal_itr = False
             if abnormal_itr:
@@ -745,7 +720,6 @@ def eval_V_int_CI_bootstrap_multi(
         knots=None,
         total_N=None,
         burn_in=0,
-        use_vector_env=True,
         ipw=False,
         weight_curr_step=True,
         estimate_missing_prob=False,
@@ -781,8 +755,7 @@ def eval_V_int_CI_bootstrap_multi(
         eval_env=None,
         eval_S_inits_dict=None,
         eval_seed=1,
-        verbose_freq=1,
-        **kwargs):
+        verbose_freq=1):
     """Calculate the CI for integrated value for multiple initial state distribution, user bootstrap to estimate standard deviation."""
 
     if value_import_dir:
@@ -806,12 +779,10 @@ def eval_V_int_CI_bootstrap_multi(
         ipw = False
         estimate_missing_prob = False
 
-    if env is None:
-        if use_vector_env:
-            env = VectorSimEnv(num_envs=n, T=T, **kwargs)
-        else:
-            env = SimEnv(T=T, **kwargs)
+    assert env is not None, 'Please specify the environment'
     env.T = T
+    if env.is_vector_env:
+        env.num_envs = n
     agent = LSTDQ(env=env,
                        n=n,
                        scale=scale,
@@ -995,7 +966,7 @@ def eval_V_int_CI_bootstrap_multi(
             est_V = inference_dict['value']
             est_V_std = inference_dict['std']
             print(f'init {k} theoretical std: {est_V_std}')
-            pointwise_V_est = agent.V(S=eval_S_inits, policy=target_policy).squeeze()
+            pointwise_V_est = agent.V(states=eval_S_inits, policy=target_policy).squeeze()
             pointwise_mse = np.mean((pointwise_V_est - true_value[k]) ** 2)
             abnormal_itr = False
             if abnormal_itr:

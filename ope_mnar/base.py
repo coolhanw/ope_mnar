@@ -5,7 +5,7 @@ import os
 import gc
 import joblib
 import time
-from collections import Counter
+import collections
 import pathlib
 # RL environment
 from gym.spaces import Tuple
@@ -29,7 +29,8 @@ from utils import (
     iden,
     MinMaxScaler,
     MLPModule,
-    ExpoTiltingClassifierMNAR
+    ExpoTiltingClassifierMNAR,
+    SimpleReplayBuffer
 )
 
 
@@ -46,7 +47,7 @@ class SimulationBase(object):
         """
         assert env is not None or eval_env is not None, "please provide env or eval_env"
         self.env = env
-        self.vectorized_env = env.vectorized if env is not None else True
+        self.vectorized_env = env.is_vector_env if env is not None else True
         if eval_env is None and env is not None:
             self.eval_env = copy.deepcopy(env)
         else:
@@ -1426,7 +1427,7 @@ class SimulationBase(object):
                 if verbose:
                     print(f'bins:{self.instrument_disc_bins}')
                 z_arr = np.digitize(z_arr, bins=self.instrument_disc_bins)
-                z_arr_count = Counter(z_arr)
+                z_arr_count = collections.Counter(z_arr)
                 print(f'Counter(z_arr): {z_arr_count}')
                 # make sure every level of Z has samples in it
                 for i in range(1, L + 1):
@@ -1846,7 +1847,7 @@ class SimulationBase(object):
             S_traj, A_traj, reward_traj = training_buffer[k][:3]
             T = A_traj.shape[0]
             action_list.append(A_traj.reshape(-1, 1))
-            X_mat = self.Q(S=S_traj, A=A_traj, predictor=True)
+            X_mat = self.Q(states=S_traj, actions=A_traj, predictor=True)
             f_list.append(X_mat)
         actions = np.vstack(action_list).squeeze()
         X, y = np.vstack(f_list), actions
@@ -2235,3 +2236,220 @@ class SimulationBase(object):
         """
         raise NotImplementedError
 
+    def validate_visitation_ratio(self, grid_size=10, visualize=False):
+        self.grid = []
+        self.idx2states = collections.defaultdict(list)
+        if not hasattr(self, 'replay_buffer'):
+            self.replay_buffer = SimpleReplayBuffer(trajs=self.masked_buffer, seed=self.seed)
+        states = self.replay_buffer.states
+        actions = self.replay_buffer.actions
+        # predict omega
+        omega_values = self.omega(states, actions)
+        
+        discretized_states = np.zeros_like(states)
+        for i in range(self.state_dim):
+            disc_bins = np.linspace(start=self.low[i] - 0.1, stop=self.high[i] + 0.1, num=grid_size + 1)
+            # disc_bins = np.quantile(a=states[:,i], q=np.linspace(0, 1, grid_size + 1))
+            # disc_bins[0] -= 0.1
+            # disc_bins[-1] += 0.1
+            self.grid.append(disc_bins)
+            discretized_states[:,i] = np.digitize(states[:,i], bins=disc_bins) - 1
+        discretized_states = list(map(tuple, discretized_states.astype('int')))
+        for ds, s, a, o in zip(discretized_states, states, actions, omega_values):
+            # self.idx2states[ds].append(np.append(np.append(s, a), o))
+            self.idx2states[ds].append(np.concatenate([s, [a], [o]]))
+
+        # generate trajectories under the target policy
+        self.idx2states_target = collections.defaultdict(list)
+
+        init_states = self._initial_obs
+        old_num_envs = self.eval_env.num_envs
+        eval_size = len(init_states)
+
+        self.eval_env.num_envs = eval_size
+        self.eval_env.observation_space = batch_space(
+            self.eval_env.single_observation_space,
+            n=self.eval_env.num_envs)
+        self.eval_env.action_space = Tuple(
+            (self.eval_env.single_action_space, ) * self.eval_env.num_envs)
+
+        trajectories = self.gen_batch_trajs(
+            policy=self.target_policy.policy_func,
+            seed=None,
+            S_inits=init_states,
+            evaluation=True)
+        states_target, actions_target, rewards_target = trajectories[:3]
+        time_idxs_target = np.tile(np.arange(self.eval_env.T), reps=len(states_target))
+        states_target = np.vstack(states_target)
+        actions_target = actions_target.flatten()
+        print('empirical value:', np.mean(rewards_target) / (1 - self.gamma))
+        # recover eval_env
+        self.eval_env.num_envs = old_num_envs
+        self.eval_env.observation_space = batch_space(
+            self.eval_env.single_observation_space,
+            n=self.eval_env.num_envs)
+        self.eval_env.action_space = Tuple(
+            (self.eval_env.single_action_space, ) * self.eval_env.num_envs)
+
+        discretized_states_target = np.zeros_like(states_target)
+        for i in range(self.state_dim):
+            disc_bins = self.grid[i]
+            discretized_states_target[:,i] = np.digitize(states_target[:,i], bins=disc_bins) - 1
+        discretized_states_target = list(map(tuple, discretized_states_target.astype('int')))
+        for ds, s, a, t in zip(discretized_states_target, states_target, actions_target, time_idxs_target):
+            self.idx2states_target[ds].append(np.concatenate([s, [a], [t]]))
+
+        # only for  2D state, binary action
+        freq_mat = np.zeros(shape=(self.num_actions, grid_size, grid_size))
+        visit_ratio_mat = np.zeros(shape=(self.num_actions, grid_size, grid_size))
+        for k, v in self.idx2states.items():
+            v = np.array(v)
+            freq_mat[0][k[0]][k[1]] = sum(v[:,self.state_dim] == 0) / len(states)
+            freq_mat[1][k[0]][k[1]] = sum(v[:,self.state_dim] == 1) / len(states)
+            visit_ratio_mat[0][k[0]][k[1]] = np.mean(v[v[:,self.state_dim] == 0,self.state_dim+1])
+            visit_ratio_mat[1][k[0]][k[1]] = np.mean(v[v[:,self.state_dim] == 1,self.state_dim+1])
+
+        freq_target_mat = np.zeros(shape=(self.num_actions, grid_size, grid_size))
+        visit_ratio_ref_mat = np.zeros(shape=(self.num_actions, grid_size, grid_size))
+        for k, v in self.idx2states_target.items():
+            v = np.array(v)
+            freq_target_mat[0][k[0]][k[1]] = (1-self.gamma) * sum(self.gamma ** v[v[:,self.state_dim] == 0, self.state_dim+1]) / eval_size
+            freq_target_mat[1][k[0]][k[1]] = (1-self.gamma) * sum(self.gamma ** v[v[:,self.state_dim] == 1, self.state_dim+1]) / eval_size
+            # freq_target_mat[1][k[0]][k[1]] = sum(v[:,self.state_dim] == 0) / len(states_target)
+            # freq_target_mat[1][k[0]][k[1]] = sum(v[:,self.state_dim] == 1) / len(states_target)
+            visit_ratio_ref_mat[0][k[0]][k[1]] = freq_target_mat[0][k[0]][k[1]] / max(freq_mat[0][k[0]][k[1]], 0.0001)
+            visit_ratio_ref_mat[1][k[0]][k[1]] = freq_target_mat[1][k[0]][k[1]] / max(freq_mat[1][k[0]][k[1]], 0.0001)
+    
+        if visualize:
+
+            fig, ax = plt.subplots(2, self.num_actions, figsize=(5*self.num_actions,8))
+            for a in range(self.num_actions):
+                sns.heatmap(
+                    freq_mat[a], 
+                    cmap="YlGnBu",
+                    linewidth=1,
+                    ax=ax[0,a]
+                )
+                ax[0,a].invert_yaxis()
+                ax[0,a].set_title(f'discretized state visitation of pi_b (action={a})')
+            for a in range(self.num_actions):
+                sns.heatmap(
+                    freq_target_mat[a], 
+                    cmap="YlGnBu",
+                    linewidth=1,
+                    ax=ax[1,a]
+                )
+                ax[1,a].invert_yaxis()
+                ax[1,a].set_title(f'discretized state visitation of pi (action={a})')
+            plt.savefig('./output/visitation_heatplot.png')
+
+            fig, ax = plt.subplots(2, self.num_actions, figsize=(5*self.num_actions,8))
+            for a in range(self.num_actions):
+                sns.heatmap(
+                    visit_ratio_mat[a], 
+                    cmap="YlGnBu",
+                    linewidth=1,
+                    ax=ax[0,a]
+                )
+                ax[0,a].invert_yaxis()
+                ax[0,a].set_title(f'est visitation ratio (action={a})')
+            for a in range(self.num_actions):
+                sns.heatmap(
+                    visit_ratio_ref_mat[a], 
+                    cmap="YlGnBu",
+                    linewidth=1,
+                    ax=ax[1,a]
+                )
+                ax[1,a].invert_yaxis()
+                ax[1,a].set_title(f'empirical visitation ratio (action={a})')
+            plt.savefig(f'./output/est_visitation_ratio_heatplot.png')
+            plt.close()
+
+    def validate_Q(self, grid_size=10, visualize=False):
+        self.grid = []
+        self.idx2states = collections.defaultdict(list)
+        states = self.replay_buffer.states
+        actions = self.replay_buffer.actions
+        Q_est = self.Q(states=states, actions=actions).squeeze()
+
+        # generate trajectories under the target policy
+        init_states = states # self._initial_obs
+        init_actions = actions # self._init_actions
+        old_num_envs = self.eval_env.num_envs
+        eval_size = len(init_states)
+
+        self.eval_env.num_envs = eval_size
+        self.eval_env.observation_space = batch_space(
+            self.eval_env.single_observation_space,
+            n=self.eval_env.num_envs)
+        self.eval_env.action_space = Tuple(
+            (self.eval_env.single_action_space, ) * self.eval_env.num_envs)
+
+        trajectories = self.gen_batch_trajs(
+            policy=self.target_policy.policy_func,
+            seed=None,
+            S_inits=init_states,
+            A_inits=init_actions,
+            burn_in=0,
+            evaluation=True)
+        rewards_history = self.eval_env.rewards_history * \
+                    self.eval_env.states_history_mask[:,
+                                                      :self.eval_env.rewards_history.shape[1]]
+        Q_ref = np.matmul(
+                    rewards_history,
+                    self.gamma**np.arange(
+                        start=0, stop=rewards_history.shape[1]).reshape(-1, 1)).squeeze()
+        # recover eval_env
+        self.eval_env.num_envs = old_num_envs
+        self.eval_env.observation_space = batch_space(
+            self.eval_env.single_observation_space,
+            n=self.eval_env.num_envs)
+        self.eval_env.action_space = Tuple(
+            (self.eval_env.single_action_space, ) * self.eval_env.num_envs)
+
+        discretized_states = np.zeros_like(states)
+        for i in range(self.state_dim):
+            disc_bins = np.linspace(start=self.low[i] - 0.1, stop=self.high[i] + 0.1, num=grid_size + 1)
+            # disc_bins = np.quantile(a=states[:,i], q=np.linspace(0, 1, grid_size + 1))
+            # disc_bins[0] -= 0.1
+            # disc_bins[-1] += 0.1
+            self.grid.append(disc_bins)
+            discretized_states[:,i] = np.digitize(states[:,i], bins=disc_bins) - 1
+        discretized_states = list(map(tuple, discretized_states.astype('int')))
+        for ds, s, a, q, qr in zip(discretized_states, states, actions, Q_est, Q_ref):
+            self.idx2states[ds].append(np.concatenate([s, [a], [q], [qr]]))
+
+        # only for 2D state, binary action
+        Q_mat = np.zeros(shape=(self.num_actions, grid_size, grid_size))
+        Q_ref_mat = np.zeros(shape=(self.num_actions, grid_size, grid_size))
+        for k, v in self.idx2states.items():
+            v = np.array(v)
+            if any(v[:,self.state_dim] == 0):
+                Q_mat[0][k[0]][k[1]] = np.mean(v[v[:,self.state_dim] == 0,self.state_dim+1])
+                Q_ref_mat[0][k[0]][k[1]] = np.mean(v[v[:,self.state_dim] == 0,self.state_dim+2])
+            if any(v[:,self.state_dim] == 1):
+                Q_mat[1][k[0]][k[1]] = np.mean(v[v[:,self.state_dim] == 1,self.state_dim+1])
+                Q_ref_mat[1][k[0]][k[1]] = np.mean(v[v[:,self.state_dim] == 1,self.state_dim+2])
+
+        if visualize:
+
+            fig, ax = plt.subplots(2, self.num_actions, figsize=(5*self.num_actions,8))
+            for a in range(self.num_actions):
+                sns.heatmap(
+                    Q_mat[a], 
+                    cmap="YlGnBu",
+                    linewidth=1,
+                    ax=ax[0,a]
+                )
+                ax[0,a].invert_yaxis()
+                ax[0,a].set_title(f'estimated Q (action={a})')
+            for a in range(self.num_actions):
+                sns.heatmap(
+                    Q_ref_mat[a], 
+                    cmap="YlGnBu",
+                    linewidth=1,
+                    ax=ax[1,a]
+                )
+                ax[1,a].invert_yaxis()
+                ax[1,a].set_title(f'empirical Q (action={a})')
+            plt.savefig(f'./output/Qfunc_heatplot.png')

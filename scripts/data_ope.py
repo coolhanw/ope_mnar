@@ -21,22 +21,22 @@ import json
 
 try:
     from batch_rl.dqn import QNetwork, DQN, DuelingDQN, DuelingQNetwork
-    from batch_rl.policy import DiscreteQFArgmaxPolicy
     from batch_rl.bcq import BehaviorQNetwork, discrete_BCQ
     from batch_rl.rem import MulitNetworkQNetwork, REM, random_stochastic_matrix
     from batch_rl.utils import ReplayBuffer, ReplayBufferPER  
-    from ope_mnar.utils import MinMaxScaler, VectorSepsisEnv
-    from ope_mnar.direct_method import LSTDQ  
+    from ope_mnar.utils import MinMaxScaler
+    from ope_mnar.direct_method import LSTDQ
+    from custom_env.sepsis import SepsisVectorEnvSpec
 except:
     sys.path.append(os.path.expanduser('~/Projects/ope_mnar'))
     sys.path.append(os.path.expanduser('~/Projects/ope_mnar/ope_mnar'))
     from batch_rl.dqn import QNetwork, DQN, DuelingDQN, DuelingQNetwork
-    from batch_rl.policy import DiscreteQFArgmaxPolicy
     from batch_rl.bcq import BehaviorQNetwork, discrete_BCQ
     from batch_rl.rem import MulitNetworkQNetwork, REM, random_stochastic_matrix
     from batch_rl.utils import ReplayBuffer, ReplayBufferPER  
-    from ope_mnar.utils import MinMaxScaler, VectorSepsisEnv
-    from ope_mnar.direct_method import LSTDQ      
+    from ope_mnar.utils import MinMaxScaler
+    from ope_mnar.direct_method import LSTDQ
+    from custom_env.sepsis import SepsisVectorEnvSpec
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--discount', type=float, default=0.8)
@@ -64,10 +64,10 @@ parser.add_argument('--exclude_icu_morta',
                     default=False)
 parser.add_argument('--use_complete_trajs',
                     type=lambda x: (str(x).lower() == 'true'),
-                    default=True)
+                    default=False)
 parser.add_argument('--apply_custom_dropout',
                     type=lambda x: (str(x).lower() == 'true'),
-                    default=True)
+                    default=False)
 parser.add_argument('--casewise_downsampling',
                     type=lambda x: (str(x).lower() == 'true'),
                     default=False)
@@ -628,7 +628,7 @@ if __name__ == '__main__':
     else:
         knots = 'equivdist'  # 'equivdist', 'quantile'
 
-    env = VectorSepsisEnv(
+    env_spec = SepsisVectorEnvSpec(
         num_envs=n_traj,
         T=T,
         static_state_list=static_features,
@@ -759,7 +759,7 @@ if __name__ == '__main__':
                 fig.savefig(loss_fig_name)
                 dqn.save(filename=dqn_filename)
             dqn_Q = QNetwork(
-                state_dim=state_dim, num_actions=num_actions, hidden_sizes=hidden_sizes)
+                input_dim=state_dim, output_dim=num_actions, hidden_sizes=hidden_sizes)
             dqn_Q.load_state_dict(torch.load(dqn_filename+'_Q'))
 
             def target_policy(S):
@@ -801,7 +801,7 @@ if __name__ == '__main__':
                 dqn.save(filename=dqn_filename)
             # retrieve Q-function
             dqn_Q = DuelingQNetwork(
-                state_dim=state_dim, num_actions=num_actions, hidden_sizes=hidden_sizes)
+                input_dim=state_dim, output_dim=num_actions, hidden_sizes=hidden_sizes)
             dqn_Q.load_state_dict(torch.load(dqn_filename+'_Q'))
 
             def target_policy(S):
@@ -839,7 +839,7 @@ if __name__ == '__main__':
                 bcq.save(filename=bcq_filename)
             # retrieve Q-function
             bcq_Q = BehaviorQNetwork(
-                state_dim=state_dim, num_actions=num_actions, hidden_sizes=hidden_sizes)
+                input_dim=state_dim, output_dim=num_actions, hidden_sizes=hidden_sizes)
             bcq_Q.load_state_dict(torch.load(bcq_filename+'_Q'))
 
             def target_policy(S):
@@ -882,7 +882,7 @@ if __name__ == '__main__':
                 fig.savefig(loss_fig_name)
                 rem.save(filename=rem_filename)
             # retrieve Q-function
-            rem_Q = MulitNetworkQNetwork(state_dim=state_dim, num_actions=num_actions, num_networks=num_networks,
+            rem_Q = MulitNetworkQNetwork(input_dim=state_dim, output_dim=num_actions, num_networks=num_networks,
                                             hidden_sizes=hidden_sizes, transform_strategy=transform_strategy, transform_matrix=random_stochastic_matrix(dim=num_networks, num_cols=1))  # transform_matrix=random_stochastic_matrix(dim=num_networks,num_cols=1)
             rem_Q.load_state_dict(torch.load(rem_filename+'_Q'))
             print(rem_Q._kwargs['transform_matrix'])
@@ -897,7 +897,7 @@ if __name__ == '__main__':
             raise NotImplementedError
     elif eval_behavior_policy:
         agent = LSTDQ(
-            env=env,
+            env=env_spec,
             horizon=T,
             scale=scale,  # 'MinMax'
             product_tensor=False,
@@ -958,7 +958,7 @@ if __name__ == '__main__':
     result_summary = collections.defaultdict(list)
     for subsample_id in subsample_id_list:
         mimic_ope = LSTDQ(
-            env=env,
+            env=env_spec,
             horizon=T,
             scale=scale,  # 'MinMax'
             product_tensor=False,
@@ -1038,10 +1038,10 @@ if __name__ == '__main__':
                                 subsample_index=None)
 
             print("end updating...")
-            env.close()
+            env_spec.close()
 
             # estimate value
-            est_V_int = mimic_ope.get_target_value(
+            est_V_int = mimic_ope.get_value(
                 target_policy=target_policy, S_inits=None)
             print(f'estimated value integral: {est_V_int}')
 
