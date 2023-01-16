@@ -72,8 +72,8 @@ class MulitNetworkQNetwork(nn.Module):
         """
         Parameters
 		----------
-        state_dim (int) : state dimension
-        num_actions (int) : number of actions.
+        input_dim (int) : input dimension.
+        output_dim (int) : output dimension.
         hidden_sizes (list) : sizes of hidden layers.
         num_networks (int) : number of separate Q-networks.
         transform_strategy (str) : Possible options include 
