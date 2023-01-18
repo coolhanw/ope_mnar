@@ -34,7 +34,7 @@ parser.add_argument('--burn_in', type=int, default=0)
 parser.add_argument('--mc_size', type=int, default=250)
 parser.add_argument('--eval_policy_mc_size', type=int, default=10000)
 parser.add_argument('--eval_horizon', type=int, default=250)
-parser.add_argument('--dropout_scheme', type=str, default='3.19')  # '3.19'
+parser.add_argument('--dropout_scheme', type=str, default='0', choices=["0", "mnar.v0", "mar.v0"])  # 'mnar.v0'
 parser.add_argument('--dropout_rate', type=float, default=0.9)
 parser.add_argument(
     '--dropout_obs_count_thres',
@@ -91,12 +91,12 @@ if __name__ == '__main__':
     if env_class.lower() == 'linear2d':
         if dropout_scheme == '0':
             missing_mechanism = None
-        elif dropout_scheme in ['3.19', '3.20']:
+        elif dropout_scheme in ['mnar.v0', 'mnar.v1']:
             missing_mechanism = 'mnar'
             instrument_var_index = 1
-            if dropout_scheme == '3.19':
+            if dropout_scheme == 'mnar.v0':
                 bandwidth_factor = 7.5
-            elif dropout_scheme == '3.20':
+            elif dropout_scheme == 'mnar.v1':
                 bandwidth_factor = 2.5
         else:
             missing_mechanism = 'mar'
@@ -152,7 +152,7 @@ if __name__ == '__main__':
     print(f'eval_policy_mc_size : {eval_policy_mc_size}')
     print(f'eval_horizon : {eval_horizon}')
     print(
-        f'Logged to folder: T_{T}_n_{n}_L_{dof}_gamma{gamma}_dropout{dropout_scheme}'
+        f'Logged to folder: T_{T}_n_{n}_L_{dof}_gamma{gamma}_dropout_{dropout_scheme}'
     )
 
     
@@ -223,11 +223,11 @@ if __name__ == '__main__':
 
     train_dir = os.path.join(
         log_dir,
-        f'{env_class}_est_Q_func{folder_suffix}/T_{T}_n_{n}_L_{dof}_gamma{gamma}_dropout{dropout_scheme}'
+        f'{env_class}_est_Q_func{folder_suffix}/T_{T}_n_{n}_L_{dof}_gamma{gamma}_dropout_{dropout_scheme}'
     )
     value_dir = os.path.join(
         log_dir,
-        f'{env_class}_est_value{folder_suffix}/T_{T}_n_{n}_L_{dof}_gamma{gamma}_dropout{dropout_scheme}'
+        f'{env_class}_est_value{folder_suffix}/T_{T}_n_{n}_L_{dof}_gamma{gamma}_dropout_{dropout_scheme}'
     )
     true_value_dir = os.path.join(log_dir,
                                   f'{env_class}_est_value{folder_suffix}')
@@ -248,10 +248,10 @@ if __name__ == '__main__':
             suffix = f'ipw_{prop}_itr_{itr}'
         else:
             suffix = f'itr_{itr}'
-        filename_train = f'train_with_T_{T}_n_{n}_L_{dof}_gamma{gamma}_dropout{dropout_scheme}_{suffix}'
-        filename_value_int = f'value_int_with_T_{T}_n_{n}_L_{dof}_gamma{gamma}_dropout{dropout_scheme}_{suffix}'
-        filename_value = f'value_with_T_{T}_n_{n}_L_{dof}_gamma{gamma}_dropout{dropout_scheme}_{suffix}'
-        # filename_data = f'train_data_T_{T}_n_{n}_L_{dof}_gamma{gamma}_dropout{dropout_scheme}_{suffix}.csv'
+        filename_train = f'train_with_T_{T}_n_{n}_L_{dof}_gamma{gamma}_dropout_{dropout_scheme}_{suffix}'
+        filename_value_int = f'value_int_with_T_{T}_n_{n}_L_{dof}_gamma{gamma}_dropout_{dropout_scheme}_{suffix}'
+        filename_value = f'value_with_T_{T}_n_{n}_L_{dof}_gamma{gamma}_dropout_{dropout_scheme}_{suffix}'
+        # filename_data = f'train_data_T_{T}_n_{n}_L_{dof}_gamma{gamma}_dropout_{dropout_scheme}_{suffix}.csv'
         filename_true_value = f'{env_class}_true_value_T_{eval_horizon}_gamma{gamma}_size{eval_policy_mc_size}'
 
         print('Train Q-function...')

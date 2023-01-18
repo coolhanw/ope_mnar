@@ -32,7 +32,7 @@ parser.add_argument('--mc_size', type=int, default=250)
 parser.add_argument('--eval_policy_mc_size', type=int,
                     default=10000)  # use 100 for test purpose
 parser.add_argument('--eval_horizon', type=int, default=250)
-parser.add_argument('--dropout_scheme', type=str, default='0') 
+parser.add_argument('--dropout_scheme', type=str, default='0', choices=["0", "mnar.v0", "mar.v0"]) 
 parser.add_argument('--dropout_rate', type=float, default=0.9)
 parser.add_argument('--dropout_obs_count_thres', type=int, default=2)
 parser.add_argument('--ipw',
@@ -78,12 +78,12 @@ if __name__ == '__main__':
     if env_class.lower() == 'linear2d':
         if dropout_scheme == '0':
             missing_mechanism = None
-        elif dropout_scheme in ['3.19', '3.20']:
+        elif dropout_scheme in ['mnar.v0', 'mnar.v1']:
             missing_mechanism = 'mnar'
             instrument_var_index = 1
-            if dropout_scheme == '3.19':
+            if dropout_scheme == 'mnar.v0':
                 bandwidth_factor = 7.5
-            elif dropout_scheme == '3.20':
+            elif dropout_scheme == 'mnar.v1':
                 bandwidth_factor = 2.5
         else:
             missing_mechanism = 'mar'
@@ -149,13 +149,13 @@ if __name__ == '__main__':
     print(f'eval_horizon : {eval_horizon}')
     print(f'Logged to folder: {export_dir}')
 
-    mnar_scheme_list = ['3.19', '3.19-mar', '3.20', '3.20-mar']
+    mnar_scheme_list = ['mnar.v0', 'mnar.v0-mar', 'mnar.v1', 'mnar.v1-mar']
     scheme_map = {
         '0': 'no dropout',
-        '3.19': 'scheme (a)',
-        '3.19-mar': 'scheme (a*)',
-        '3.20': 'scheme (b)',
-        '3.20-mar': 'scheme (b*)'
+        'mnar.v0': 'scheme (a)',
+        'mnar.v0-mar': 'scheme (a*)',
+        'mnar.v1': 'scheme (b)',
+        'mnar.v1-mar': 'scheme (b*)'
     }
     method_map = {'cc': 'CC', 'ipw_propT': 'IPW', 'ipw_propF': 'IPW(est)'}
 
