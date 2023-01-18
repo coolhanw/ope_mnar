@@ -2115,9 +2115,9 @@ class SimulationBase(object):
                         eval_horizon=None,
                         seed=None,
                         S_inits=None,
-                        mask_unobserved=True):
+                        mask_unobserved=False):
         """
-        Evaluate given policy using Monte Carlo approximation
+        Evaluate given policy (true value) using Monte Carlo approximation
 
         Args:
             policy (callable): target policy to be evaluated
@@ -2206,7 +2206,7 @@ class SimulationBase(object):
                                           -1, 1))
             true_V = true_value.squeeze().tolist()
 
-            return np.mean(true_V)
+            return S_inits, true_V, np.mean(true_V)
 
     def get_state_values(self, target_policy, S_inits=None, MC_size=None):
         """Wrapper function of V

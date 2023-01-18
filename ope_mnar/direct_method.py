@@ -12,7 +12,6 @@ from itertools import product
 from scipy.stats import norm
 from scipy.interpolate import BSpline
 # ML model
-from sklearn.linear_model import LinearRegression
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.preprocessing import StandardScaler
 import torch
@@ -30,6 +29,7 @@ from base import SimulationBase
 from batch_rl.dqn import QNetwork
 
 __all__ = ['LSTDQ', 'FQE']
+
 
 class LSTDQ(SimulationBase):
     """
@@ -425,7 +425,7 @@ class LSTDQ(SimulationBase):
         dropout_prob_list = []
         max_inverse_wt = 1
         min_inverse_wt = 1 / prob_lbound if prob_lbound is not None else 0
-        
+
         training_buffer = self.masked_buffer
         keys = training_buffer.keys()
         if subsample_index is not None:
@@ -481,7 +481,8 @@ class LSTDQ(SimulationBase):
         del training_buffer
         print(f'pseudo sample size: {inverse_wts.sum()}')
 
-        Xi_mat = self._Xi(states=obs, actions=actions) # (n, para_dim*num_actions)
+        Xi_mat = self._Xi(states=obs,
+                          actions=actions)  # (n, para_dim*num_actions)
         self._Xi_mat = Xi_mat
 
         if dropout_prob_concat:
@@ -534,7 +535,8 @@ class LSTDQ(SimulationBase):
             }
             ridge_factor = best_param
 
-        self.Sigma_hat = np.diag([ridge_factor] * mat1.shape[0]) + mat1 / self.total_T_ipw
+        self.Sigma_hat = np.diag(
+            [ridge_factor] * mat1.shape[0]) + mat1 / self.total_T_ipw
         self.Sigma_hat = self.Sigma_hat.astype(float)
         self.vector = mat2 / self.total_T_ipw
         self.inv_Sigma_hat = np.linalg.pinv(self.Sigma_hat)
@@ -542,49 +544,49 @@ class LSTDQ(SimulationBase):
         # store the estimated beta in self.para
         self._store_para(self.est_beta)
         if verbose:
-            print('Finish estimating beta!')        
+            print('Finish estimating beta!')
 
         if verbose:
             print('Start calculating Omega...')
-        proj_td = inverse_wts * (rewards +
-             self.gamma * self.V(states=next_obs, policy=policy).reshape(-1, 1) -
-             self.Q(states=obs, actions=actions).reshape(-1, 1)) * Xi_mat  # (n, para_dim*num_actions)
+        proj_td = inverse_wts * (
+            rewards +
+            self.gamma * self.V(states=next_obs, policy=policy).reshape(-1, 1)
+            - self.Q(states=obs, actions=actions).reshape(
+                -1, 1)) * Xi_mat  # (n, para_dim*num_actions)
         output = np.matmul(
             proj_td.T, proj_td)  # (para_dim*num_actions, para_dim*num_actions)
         self.Omega = output / self.total_T_ipw
         if verbose:
             print('Finish calculating Omega!')
 
-    def estimate_Q(self, 
-                  target_policy,
-                  ipw=False,
-                  estimate_missing_prob=False,
-                  weight_curr_step=True,
-                  prob_lbound=1e-3,
-                  ridge_factor=0.,
-                  L=10, 
-                  d=3, 
-                  knots=None,
-                  grid_search=False,
-                  verbose=True,
-                  subsample_index=None):
+    def estimate_Q(self,
+                   target_policy,
+                   ipw=False,
+                   estimate_missing_prob=False,
+                   weight_curr_step=True,
+                   prob_lbound=1e-3,
+                   ridge_factor=0.,
+                   L=10,
+                   d=3,
+                   knots=None,
+                   grid_search=False,
+                   verbose=True,
+                   subsample_index=None):
         """Main function for estimating the parameters for the Q-function."""
-        
+
         self.target_policy = target_policy
 
         self.B_spline(L=L, d=d, knots=knots)
 
-        self._beta_hat(
-            policy=target_policy,
-            ipw=ipw,
-            estimate_missing_prob=estimate_missing_prob,
-            weight_curr_step=weight_curr_step,
-            prob_lbound=prob_lbound,
-            ridge_factor=ridge_factor,
-            grid_search=grid_search,
-            verbose=verbose,
-            subsample_index=subsample_index
-        )
+        self._beta_hat(policy=target_policy,
+                       ipw=ipw,
+                       estimate_missing_prob=estimate_missing_prob,
+                       weight_curr_step=weight_curr_step,
+                       prob_lbound=prob_lbound,
+                       ridge_factor=ridge_factor,
+                       grid_search=grid_search,
+                       verbose=verbose,
+                       subsample_index=subsample_index)
 
     def _store_para(self, est_beta):
         """Store the estimated beta in self.para
@@ -596,7 +598,7 @@ class LSTDQ(SimulationBase):
             est_beta = self.est_beta
         for i in range(self.num_actions):
             self.para[i] = est_beta[i * self.para_dim:(i + 1) *
-                                         self.para_dim].reshape(-1)
+                                    self.para_dim].reshape(-1)
 
     def _Omega_hat(self,
                    policy,
@@ -631,17 +633,17 @@ class LSTDQ(SimulationBase):
             assert hasattr(
                 self, 'propensity_pred'
             ), 'please call function self.estimate_missing_prob() first'
-        
+
         if not hasattr(self, 'est_beta') or self.est_beta is None:
             self._beta_hat(policy=policy,
-                        ipw=ipw,
-                        estimate_missing_prob=estimate_missing_prob,
-                        weight_curr_step=weight_curr_step,
-                        prob_lbound=prob_lbound,
-                        ridge_factor=ridge_factor,
-                        grid_search=grid_search,
-                        verbose=verbose,
-                        subsample_index=subsample_index)
+                           ipw=ipw,
+                           estimate_missing_prob=estimate_missing_prob,
+                           weight_curr_step=weight_curr_step,
+                           prob_lbound=prob_lbound,
+                           ridge_factor=ridge_factor,
+                           grid_search=grid_search,
+                           verbose=verbose,
+                           subsample_index=subsample_index)
 
         if not hasattr(self, 'Omega') or self.Omega is None:
             total_T = 0
@@ -666,7 +668,8 @@ class LSTDQ(SimulationBase):
                 reward_list.append(reward_traj[:T].reshape(-1, 1))
                 if estimate_missing_prob:
                     surv_prob = self.propensity_pred[i][1][:T].reshape(-1, 1)
-                    dropout_prob = self.propensity_pred[i][0][:T].reshape(-1, 1)
+                    dropout_prob = self.propensity_pred[i][0][:T].reshape(
+                        -1, 1)
                 else:
                     surv_prob = survival_prob[:T].reshape(
                         -1, 1) if survival_prob is not None else None
@@ -678,11 +681,12 @@ class LSTDQ(SimulationBase):
                 else:
                     if weight_curr_step:
                         inverse_wt = 1 / np.clip(a=1 - dropout_prob,
-                                                a_min=prob_lbound,
-                                                a_max=1)  # bound ipw
+                                                 a_min=prob_lbound,
+                                                 a_max=1)  # bound ipw
                     else:
-                        inverse_wt = 1 / np.clip(
-                            a=surv_prob, a_min=prob_lbound, a_max=1)  # bound ipw
+                        inverse_wt = 1 / np.clip(a=surv_prob,
+                                                 a_min=prob_lbound,
+                                                 a_max=1)  # bound ipw
                 inverse_wt_list.append(inverse_wt)
 
             obs = np.vstack(obs_list)  # (total_T, S_dim)
@@ -690,20 +694,23 @@ class LSTDQ(SimulationBase):
             actions = np.vstack(action_list)  # (total_T, 1)
             rewards = np.vstack(reward_list)  # (total_T, 1)
             surv_probs = np.vstack(surv_prob_list)  # (total_T, 1)
-            inverse_wts = np.vstack(inverse_wt_list).astype(float)  # (total_T, 1)
+            inverse_wts = np.vstack(inverse_wt_list).astype(
+                float)  # (total_T, 1)
             inverse_wts_mat = np.diag(v=inverse_wts.squeeze()).astype(
                 float)  # (total_T, total_T)
             del training_buffer
-            
-            Xi = self._Xi(states=obs, actions=actions)  # (n, para_dim*num_actions)
+
+            Xi = self._Xi(states=obs,
+                          actions=actions)  # (n, para_dim*num_actions)
             proj_td = np.matmul(
                 inverse_wts_mat *
-                (rewards +
-                self.gamma * self.V(states=next_obs, policy=policy).reshape(-1, 1) -
-                self.Q(states=obs, actions=actions).reshape(-1, 1)), Xi
+                (rewards + self.gamma *
+                 self.V(states=next_obs, policy=policy).reshape(-1, 1) -
+                 self.Q(states=obs, actions=actions).reshape(-1, 1)), Xi
             )  # (n, para_dim*num_actions), np.sqrt(inverse_wts_mat) or inverse_wts_mat?
             output = np.matmul(
-                proj_td.T, proj_td)  # (para_dim*num_actions, para_dim*num_actions)
+                proj_td.T,
+                proj_td)  # (para_dim*num_actions, para_dim*num_actions)
 
             self.Omega = output / self.total_T_ipw
 
@@ -921,8 +928,7 @@ class LSTDQ(SimulationBase):
                       MC_size=10000,
                       S_inits=None,
                       verbose=True,
-                      subsample_index=None
-                    ):
+                      subsample_index=None):
         """Make inference on integrated value.
 
         Args:
@@ -1000,10 +1006,14 @@ class LSTDQ(SimulationBase):
                            S_inits=S_inits)
         return est_V
 
-    def get_value_interval(self, target_policy=None, alpha=0.05, S_inits=None, MC_size=None):
+    def get_value_interval(self,
+                           target_policy=None,
+                           alpha=0.05,
+                           S_inits=None,
+                           MC_size=None):
         """Main function for getting value confidence interval."""
 
-        print("Calculating the U matrix")
+        print("Getting value interval estimates")
         if S_inits is None:
             if MC_size is not None:
                 S_inits = self.sample_initial_states(size=MC_size,
@@ -1012,23 +1022,22 @@ class LSTDQ(SimulationBase):
                 S_inits = self._initial_obs
         if target_policy is None:
             target_policy = self.target_policy
-        U = self._U(states=S_inits, policy=target_policy)  # (MC_size, para_dim * num_actions)
-        U_int = np.mean(U, axis=0).reshape(-1,1)  # (para_dim * num_actions, 1)
+        U = self._U(states=S_inits,
+                    policy=target_policy)  # (MC_size, para_dim * num_actions)
+        U_int = np.mean(U, axis=0).reshape(-1,
+                                           1)  # (para_dim * num_actions, 1)
 
-        print("Getting value point estimates")
         V = self.V_int(policy=target_policy, MC_size=MC_size, S_inits=S_inits)
 
-        print("Calculating sigma-squared")
         V_int_sigma_sq = reduce(np.matmul, [
             U_int.T, self.inv_Sigma_hat, self.Omega, self.inv_Sigma_hat.T,
             U_int
         ])
         V_int_sigma_sq = V_int_sigma_sq.item()
         std = (V_int_sigma_sq**0.5) / (self.total_T_ipw**0.5)
-       
+
         lower_bound = V - norm.ppf(1 - alpha / 2) * std
         upper_bound = V + norm.ppf(1 - alpha / 2) * std
-        print("Finish value inference!")
 
         inference_summary = {
             'lower_bound': lower_bound,
@@ -1056,50 +1065,52 @@ class LSTDQ(SimulationBase):
         Q_est = self.Q(states=states, actions=actions).squeeze()
 
         # generate trajectories under the target policy
-        init_states = states # self._initial_obs
-        init_actions = actions # self._init_actions
+        init_states = states  # self._initial_obs
+        init_actions = actions  # self._init_actions
         old_num_envs = self.eval_env.num_envs
         eval_size = len(init_states)
 
         self.eval_env.num_envs = eval_size
         self.eval_env.observation_space = batch_space(
-            self.eval_env.single_observation_space,
-            n=self.eval_env.num_envs)
+            self.eval_env.single_observation_space, n=self.eval_env.num_envs)
         self.eval_env.action_space = Tuple(
             (self.eval_env.single_action_space, ) * self.eval_env.num_envs)
 
-        trajectories = self.gen_batch_trajs(
-            policy=self.target_policy,
-            seed=None,
-            S_inits=init_states,
-            A_inits=init_actions,
-            burn_in=0,
-            evaluation=True)
+        trajectories = self.gen_batch_trajs(policy=self.target_policy,
+                                            seed=None,
+                                            S_inits=init_states,
+                                            A_inits=init_actions,
+                                            burn_in=0,
+                                            evaluation=True)
         rewards_history = self.eval_env.rewards_history * \
                     self.eval_env.states_history_mask[:,
                                                       :self.eval_env.rewards_history.shape[1]]
         Q_ref = np.matmul(
-                    rewards_history,
-                    self.gamma**np.arange(
-                        start=0, stop=rewards_history.shape[1]).reshape(-1, 1)).squeeze()
+            rewards_history,
+            self.gamma**np.arange(start=0,
+                                  stop=rewards_history.shape[1]).reshape(
+                                      -1, 1)).squeeze()
         # recover eval_env
         self.eval_env.num_envs = old_num_envs
         self.eval_env.observation_space = batch_space(
-            self.eval_env.single_observation_space,
-            n=self.eval_env.num_envs)
+            self.eval_env.single_observation_space, n=self.eval_env.num_envs)
         self.eval_env.action_space = Tuple(
             (self.eval_env.single_action_space, ) * self.eval_env.num_envs)
 
         discretized_states = np.zeros_like(states)
         for i in range(self.state_dim):
-            disc_bins = np.linspace(start=self.low[i] - 0.1, stop=self.high[i] + 0.1, num=grid_size + 1)
+            disc_bins = np.linspace(start=self.low[i] - 0.1,
+                                    stop=self.high[i] + 0.1,
+                                    num=grid_size + 1)
             # disc_bins = np.quantile(a=states[:,i], q=np.linspace(0, 1, grid_size + 1))
             # disc_bins[0] -= 0.1
             # disc_bins[-1] += 0.1
             self.grid.append(disc_bins)
-            discretized_states[:,i] = np.digitize(states[:,i], bins=disc_bins) - 1
+            discretized_states[:, i] = np.digitize(states[:, i],
+                                                   bins=disc_bins) - 1
         discretized_states = list(map(tuple, discretized_states.astype('int')))
-        for ds, s, a, q, qr in zip(discretized_states, states, actions.squeeze(), Q_est, Q_ref):
+        for ds, s, a, q, qr in zip(discretized_states, states,
+                                   actions.squeeze(), Q_est, Q_ref):
             self.idx2states[ds].append(np.concatenate([s, [a], [q], [qr]]))
 
         # only for 2D state, binary action
@@ -1107,37 +1118,34 @@ class LSTDQ(SimulationBase):
         Q_ref_mat = np.zeros(shape=(self.num_actions, grid_size, grid_size))
         for k, v in self.idx2states.items():
             v = np.array(v)
-            if any(v[:,self.state_dim] == 0):
-                Q_mat[0][k[0]][k[1]] = np.mean(v[v[:,self.state_dim] == 0,self.state_dim+1])
-                Q_ref_mat[0][k[0]][k[1]] = np.mean(v[v[:,self.state_dim] == 0,self.state_dim+2])
-            if any(v[:,self.state_dim] == 1):
-                Q_mat[1][k[0]][k[1]] = np.mean(v[v[:,self.state_dim] == 1,self.state_dim+1])
-                Q_ref_mat[1][k[0]][k[1]] = np.mean(v[v[:,self.state_dim] == 1,self.state_dim+2])
+            if any(v[:, self.state_dim] == 0):
+                Q_mat[0][k[0]][k[1]] = np.mean(v[v[:, self.state_dim] == 0,
+                                                 self.state_dim + 1])
+                Q_ref_mat[0][k[0]][k[1]] = np.mean(v[v[:, self.state_dim] == 0,
+                                                     self.state_dim + 2])
+            if any(v[:, self.state_dim] == 1):
+                Q_mat[1][k[0]][k[1]] = np.mean(v[v[:, self.state_dim] == 1,
+                                                 self.state_dim + 1])
+                Q_ref_mat[1][k[0]][k[1]] = np.mean(v[v[:, self.state_dim] == 1,
+                                                     self.state_dim + 2])
 
         if visualize:
 
-            fig, ax = plt.subplots(2, self.num_actions, figsize=(5*self.num_actions,8))
+            fig, ax = plt.subplots(2,
+                                   self.num_actions,
+                                   figsize=(5 * self.num_actions, 8))
             for a in range(self.num_actions):
-                sns.heatmap(
-                    Q_mat[a], 
-                    cmap="YlGnBu",
-                    linewidth=1,
-                    ax=ax[0,a]
-                )
-                ax[0,a].invert_yaxis()
-                ax[0,a].set_title(f'estimated Q (action={a})')
+                sns.heatmap(Q_mat[a], cmap="YlGnBu", linewidth=1, ax=ax[0, a])
+                ax[0, a].invert_yaxis()
+                ax[0, a].set_title(f'estimated Q (action={a})')
             for a in range(self.num_actions):
-                sns.heatmap(
-                    Q_ref_mat[a], 
-                    cmap="YlGnBu",
-                    linewidth=1,
-                    ax=ax[1,a]
-                )
-                ax[1,a].invert_yaxis()
-                ax[1,a].set_title(f'empirical Q (action={a})')
+                sns.heatmap(Q_ref_mat[a],
+                            cmap="YlGnBu",
+                            linewidth=1,
+                            ax=ax[1, a])
+                ax[1, a].invert_yaxis()
+                ax[1, a].set_title(f'empirical Q (action={a})')
             plt.savefig('./output/Qfunc_heatplot.png')
-
-
 
 class FQE(SimulationBase):
     """
@@ -1185,20 +1193,19 @@ class FQE(SimulationBase):
             max_iter=200,
             tol=0.001,
             use_RF=False,
-            hidden_sizes=[256,256],
-            # num_actions=2,
+            hidden_sizes=[256, 256],
             lr=0.001,
             batch_size=128,
             epoch=20000,
             patience=10,
-            # seed=0,
             scaler="Standard",
             print_freq=10,
             verbose=False,
             # other RF arguments
             **kwargs):
 
-        self.replay_buffer = SimpleReplayBuffer(trajs=self.masked_buffer, seed=self.seed)                   
+        self.replay_buffer = SimpleReplayBuffer(trajs=self.masked_buffer,
+                                                seed=self.seed)
         self.target_policy = target_policy
         self.use_RF = use_RF
         self.Q_func_class = 'nn' if not use_RF else 'rf'
@@ -1210,8 +1217,7 @@ class FQE(SimulationBase):
             self.scaler = iden()
         elif scaler == "MinMax":
             self.scaler = MinMaxScaler(
-                min_val=self.env.low,
-                max_val=self.env.high
+                min_val=self.env.low, max_val=self.env.high
             ) if self.env is not None else MinMaxScaler()
         elif scaler == "Standard":
             self.scaler = StandardScaler(with_mean=True, with_std=True)
@@ -1222,20 +1228,20 @@ class FQE(SimulationBase):
                 self.scaler = pickle.load(f)
 
         if use_RF:
-            self.model = RandomForestRegressor(**kwargs,
+            self.Q_model = RandomForestRegressor(**kwargs,
                                                n_jobs=-1,
                                                verbose=False,
                                                random_state=self.seed)
         else:
             # NN
-            self.model = QNetwork(input_dim=self.state_dim,
+            self.Q_model = QNetwork(input_dim=self.state_dim,
                                   output_dim=self.num_actions,
                                   hidden_sizes=hidden_sizes,
                                   hidden_nonlinearity=nn.ReLU())
-            self.target_model = QNetwork(input_dim=self.state_dim,
-                                  output_dim=self.num_actions,
-                                  hidden_sizes=hidden_sizes,
-                                  hidden_nonlinearity=nn.ReLU())
+            self.target_Q_model = QNetwork(input_dim=self.state_dim,
+                                         output_dim=self.num_actions,
+                                         hidden_sizes=hidden_sizes,
+                                         hidden_nonlinearity=nn.ReLU())
 
         # state features shuold be scaled first
         self._train(max_iter=max_iter,
@@ -1261,7 +1267,8 @@ class FQE(SimulationBase):
         if state.ndim == 1:
             state = state.reshape((-1, 1))
             next_state = next_state.reshape((-1, 1))
-        pi_next_state_prob = self.target_policy.get_action_prob(next_state) # the input should be on the original scale
+        pi_next_state_prob = self.target_policy.get_action_prob(
+            next_state)  # the input should be on the original scale
         old_target_Q = reward / (1 - self.gamma)
 
         # standardize the input
@@ -1275,53 +1282,59 @@ class FQE(SimulationBase):
             if self.use_RF:
                 if itr > 0:
                     target_Q = reward + self.gamma * np.sum(
-                        self.model.predict(next_state) * pi_next_state_prob,
+                        self.Q_model.predict(next_state) * pi_next_state_prob,
                         axis=1)
-                    _targets = self.model.predict(state)
+                    _targets = self.Q_model.predict(state)
                     _targets[range(len(action)), action.astype(int)] = target_Q
                 else:
                     target_Q = reward / (1 - self.gamma)
                     _targets = np.zeros(shape=(len(action), self.num_actions))
                     _targets[range(len(action)), action.astype(int)] = target_Q
-                
-                self.model.fit(state, _targets)
+
+                self.Q_model.fit(state, _targets)
             else:
-                self.model.train()
+                self.Q_model.train()
                 # reset optimizer and scheduler
-                self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
-                self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer,
-                                                                step_size=100,
-                                                                gamma=0.99)
+                self.optimizer = torch.optim.Adam(self.Q_model.parameters(),
+                                                  lr=self.lr)
+                self.scheduler = torch.optim.lr_scheduler.StepLR(
+                    self.optimizer, step_size=100, gamma=0.99)
                 min_loss = float('inf')
                 self.losses = []
                 wait_count = 0
                 for ep in range(epoch):
                     transitions = self.replay_buffer.sample(batch_size)
                     state, action, reward, next_state = transitions[:4]
-                    pi_next_state = self.target_policy.get_action(next_state) # input should on the original scale
+                    pi_next_state = self.target_policy.get_action(
+                        next_state)  # input should on the original scale
                     pi_next_state_prob = self.target_policy.get_action_prob(
                         next_state)  # input should be on the original scale
                     # standardize the input
                     state = self.scaler.transform(state)
                     next_state = self.scaler.transform(next_state)
-                    
+
                     state = torch.Tensor(state).to(self.device)
-                    action = torch.LongTensor(action[:, np.newaxis]).to(self.device)
-                    reward = torch.Tensor(reward[:, np.newaxis]).to(self.device)
+                    action = torch.LongTensor(action[:, np.newaxis]).to(
+                        self.device)
+                    reward = torch.Tensor(reward[:,
+                                                 np.newaxis]).to(self.device)
                     next_state = torch.Tensor(next_state).to(self.device)
-                    pi_next_state_prob = torch.Tensor(pi_next_state_prob).to(self.device)
+                    pi_next_state_prob = torch.Tensor(pi_next_state_prob).to(
+                        self.device)
 
                     # Compute the target Q value
                     if itr > 0:
                         with torch.no_grad():
                             target_Q = reward + self.gamma * torch.sum(
-                                self.target_model(next_state) * pi_next_state_prob,
-                                dim=1, keepdim=True) # notice, use target network here
+                                self.target_Q_model(next_state) *
+                                pi_next_state_prob,
+                                dim=1,
+                                keepdim=True)  # notice, use target network here
                     else:
                         target_Q = reward / (1 - self.gamma)
 
                     # Get current Q estimate
-                    current_Q = self.model(state).gather(dim=1, index=action)
+                    current_Q = self.Q_model(state).gather(dim=1, index=action)
 
                     # Compute Q loss, closely related to HuberLoss
                     Q_loss = F.smooth_l1_loss(input=current_Q, target=target_Q)
@@ -1333,45 +1346,50 @@ class FQE(SimulationBase):
                     self.scheduler.step()
 
                     self.losses.append(Q_loss.detach().numpy())
-
-                    mean_loss = self.losses[0]
-                    if ep % 5 == 0 and ep >= 10:
-                        if ep >= 50:
-                            mean_loss = np.mean(self.losses[(ep - 50):ep])
-                        else:
-                            mean_loss = np.mean(self.losses[(ep - 10):ep])
-                        if mean_loss / min_loss > 1:
+                    moving_window = 100
+                    if itr >= moving_window:
+                        mean_loss = np.mean(self.losses[(itr - moving_window +
+                                                         1):itr + 1])
+                    else:
+                        mean_loss = np.mean(self.losses[:itr + 1])
+                    if itr >= 10:
+                        if mean_loss > min_loss:
                             wait_count += 1
                         if mean_loss < min_loss:
                             min_loss = mean_loss
                             wait_count = 0
                     if patience is not None and wait_count >= patience:
                         break
-                
+
                 # update target network
                 self._target_update()
 
                 # evaluate on the whole data
                 reward = self.replay_buffer.rewards
                 next_state = self.replay_buffer.next_states
-                pi_next_state_prob = self.target_policy.get_action_prob(next_state)
+                pi_next_state_prob = self.target_policy.get_action_prob(
+                    next_state)
                 next_state = self.scaler.transform(next_state)
                 reward = torch.Tensor(reward).to(self.device)
                 next_state = torch.Tensor(next_state).to(self.device)
-                pi_next_state_prob = torch.Tensor(pi_next_state_prob).to(self.device)
+                pi_next_state_prob = torch.Tensor(pi_next_state_prob).to(
+                    self.device)
                 with torch.no_grad():
                     target_Q = reward + self.gamma * torch.sum(
-                        self.model(next_state) * pi_next_state_prob,
-                        dim=1, keepdim=True) # notice, use target network here
+                        self.Q_model(next_state) * pi_next_state_prob,
+                        dim=1,
+                        keepdim=True)  # notice, use target network here
                 # convert to numpy array for comparison
                 target_Q = target_Q.detach().numpy()
 
-            target_diff = abs(target_Q - old_target_Q).mean() / (abs(old_target_Q).mean() + 1e-6)
-            
+            target_diff = abs(target_Q - old_target_Q).mean() / (
+                abs(old_target_Q).mean() + 1e-6)
+
             if verbose and itr % print_freq == 0:
                 action_init_states = self.target_policy.get_action(
                     self._initial_obs)
-                values = self.Q(self._initial_obs, action_init_states) # call model.eval() inside
+                values = self.Q(self._initial_obs,
+                                action_init_states)  # call model.eval() inside
                 est_value = np.mean(values)
                 print(
                     colored(
@@ -1380,11 +1398,12 @@ class FQE(SimulationBase):
                                 np.std(values)), 'green'))
             if itr > 0 and target_diff < tol:
                 break
-            
+
             old_target_Q = target_Q.copy()
 
     def _target_update(self):
-        for param, target_param in zip(self.model.parameters(), self.target_model.parameters()):
+        for param, target_param in zip(self.Q_model.parameters(),
+                                       self.target_Q_model.parameters()):
             target_param.data.copy_(param.data)
 
     def Q(self, states, actions=None):
@@ -1392,19 +1411,22 @@ class FQE(SimulationBase):
             states = np.expand_dims(states, 1)
         states = self.scaler.transform(states)
         if self.use_RF:
-            Q_values = self.model.predict(states)
+            Q_values = self.Q_model.predict(states)
             if actions is not None:
-                return np.take_along_axis(arr=Q_values, indices=actions.reshape(-1,1), axis=1)
+                return np.take_along_axis(arr=Q_values,
+                                          indices=actions.reshape(-1, 1),
+                                          axis=1)
             else:
                 return Q_values
         else:
             states = torch.Tensor(states).to(self.device)
 
-            self.model.eval()
-            Q_values = self.model(states)
+            self.Q_model.eval()
+            Q_values = self.Q_model(states)
 
             if actions is not None:
-                actions = torch.LongTensor(actions.reshape(-1,1)).to(self.device)
+                actions = torch.LongTensor(actions.reshape(-1,
+                                                           1)).to(self.device)
                 return Q_values.gather(dim=1, index=actions).detach().numpy()
             else:
                 return Q_values.detach().numpy()
@@ -1446,6 +1468,306 @@ class FQE(SimulationBase):
         if target_policy is None:
             target_policy = self.target_policy
 
-        return np.mean(self.get_state_values(target_policy=target_policy, S_inits=S_inits))
+        return np.mean(
+            self.get_state_values(target_policy=target_policy,
+                                  S_inits=S_inits))
 
+class MQL(SimulationBase):
+    """
+    Uehara, Masatoshi, Jiawei Huang, and Nan Jiang. "Minimax weight and q-function learning for off-policy evaluation." 
+    International Conference on Machine Learning. PMLR, 2020.
+    """
 
+    def __init__(self,
+                 env,
+                 n,
+                 horizon,
+                 eval_env=None,
+                 discount=0.9,
+                 device=None,
+                 seed=0):
+
+        super().__init__(env=env,
+                         n=n,
+                         horizon=horizon,
+                         discount=discount,
+                         eval_env=eval_env)
+
+        if device is None:
+            self.device = torch.device(
+                'cuda' if torch.cuda.is_available() else 'cpu')
+        else:
+            self.device = device
+
+        self.gamma = discount
+        self.seed = seed
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed(seed)
+
+    def estimate_Q(self,
+                   target_policy,
+                   max_iter=200,
+                   hidden_sizes=[256, 256],
+                   batch_size=128,
+                   lr=0.001,
+                   target_update_frequency=100,
+                   scaler="Standard",
+                   print_freq=10,
+                   patience=10,
+                   verbose=False):
+        self.replay_buffer = SimpleReplayBuffer(trajs=self.masked_buffer,
+                                                seed=self.seed)
+
+        self.target_policy = target_policy
+        self.scaler = scaler
+        self.verbose = verbose
+        # self.lr = lr
+        # self.target_update_frequency = target_update_frequency
+
+        if scaler == "NormCdf":
+            self.scaler = normcdf()
+        elif scaler == "Identity":
+            self.scaler = iden()
+        elif scaler == "MinMax":
+            self.scaler = MinMaxScaler(
+                min_val=self.env.low, max_val=self.env.high
+            ) if self.env is not None else MinMaxScaler()
+        elif scaler == "Standard":
+            self.scaler = StandardScaler(with_mean=True, with_std=True)
+        else:
+            # a path to a fitted scaler
+            assert os.path.exists(scaler)
+            with open(scaler, 'rb') as f:
+                self.scaler = pickle.load(f)
+
+        # NN
+        self.Q_model = QNetwork(input_dim=self.state_dim,
+                              output_dim=self.num_actions,
+                              hidden_sizes=hidden_sizes,
+                              hidden_nonlinearity=nn.ReLU())
+        self.target_Q_model = QNetwork(input_dim=self.state_dim,
+                                     output_dim=self.num_actions,
+                                     hidden_sizes=hidden_sizes,
+                                     hidden_nonlinearity=nn.ReLU())
+        self.optimizer = torch.optim.Adam(self.Q_model.parameters(), lr=lr)
+        self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer,
+                                                         step_size=100,
+                                                         gamma=0.99)
+
+        # fit the scaler
+        state = self.replay_buffer.states
+        next_state = self.replay_buffer.next_states
+        if state.ndim == 1:
+            state = state.reshape((-1, 1))
+            next_state = next_state.reshape((-1, 1))
+        state_concat = np.vstack([state, next_state])
+        self.scaler.fit(state_concat)
+
+        # state features shuold be scaled first
+        self._train(max_iter=max_iter,
+                    batch_size=batch_size,
+                    target_update_frequency=target_update_frequency,
+                    patience=patience,
+                    print_freq=print_freq,
+                    verbose=verbose)
+
+    def _compute_medians(self, n=32, rep=20):
+        # do it iteratively to save memory
+        median = torch.zeros((self.state_dim + 1, ), dtype=torch.float64)
+
+        for _ in range(rep):
+            transitions = self.replay_buffer.sample(n)
+            state, action = transitions[0], transitions[1]
+            state = self.scaler.transform(state)
+            state = torch.Tensor(state)
+            state_pairwise_dist = torch.repeat_interleave(
+                input=state, repeats=n, dim=0) - torch.tile(input=state,
+                                                            dims=(n, 1))
+            median_state_dist = torch.mean(torch.abs(state_pairwise_dist),
+                                           dim=0)
+            action = torch.Tensor(action[:, np.newaxis])
+            action_pairwise_dist = torch.repeat_interleave(
+                action, repeats=n, dim=0) - torch.tile(input=action,
+                                                        dims=(n, 1))
+            median_action_dist = torch.mean(
+                torch.abs(action_pairwise_dist), dim=0)
+            median += torch.cat(
+                (median_state_dist, median_action_dist), dim=0) + 1e-6
+
+        median = median / rep
+        # return median * (self.state_dim + 1)
+        return median
+
+    def _cal_dist(self, X1=None, X2=None, median=None):
+        """
+        Laplacian Kernel: K(x, y) = exp(-gamma ||x-y||_1)
+        """
+        X1, X2 = torch.Tensor(X1), torch.Tensor(X2)
+        dist = torch.exp(-torch.sum(torch.abs(X1 - X2) / median, dim=-1))
+        dist = dist * (torch.sum(
+            torch.abs(X1[:, :self.state_dim] - X2[:, :self.state_dim]),
+            dim=-1) != 0).double()
+        return dist
+
+    def _train(self,
+               max_iter,
+               batch_size,
+               target_update_frequency,
+               patience,
+               print_freq=10,
+               verbose=False):
+
+        self.median = self._compute_medians()
+        print('median', self.median)
+
+        wait_count = 0
+        min_loss = 1e10
+
+        self.Q_model.train()
+        self.losses = []
+        for itr in range(max_iter):
+            transitions = self.replay_buffer.sample(batch_size)
+            state, action, reward, next_state = transitions[:4]
+            pi_next_state_prob = self.target_policy.get_action_prob(next_state)
+            state = self.scaler.transform(state)
+            next_state = self.scaler.transform(next_state)
+            state, action, reward, next_state = torch.FloatTensor(
+                state), torch.LongTensor(
+                    action[:, np.newaxis]), torch.FloatTensor(
+                        reward[:, np.newaxis]), torch.FloatTensor(next_state)
+            state_action = torch.cat([state, action], dim=-1)
+            state_action_repeat = torch.repeat_interleave(input=state_action,
+                                                          repeats=batch_size,
+                                                          dim=0)
+            pi_next_state_prob = torch.Tensor(pi_next_state_prob)
+            with torch.no_grad():
+                target_Q = reward + self.gamma * torch.sum(
+                    self.target_Q_model(next_state) * pi_next_state_prob,
+                    dim=1,
+                    keepdim=True)
+            current_Q = self.Q_model(state).gather(dim=1, index=action)
+            td = target_Q - current_Q
+
+            transitions_tilde = self.replay_buffer.sample(batch_size)
+            state2, action2, reward2, next_state2 = transitions_tilde[:4]
+            pi_next_state2_prob = self.target_policy.get_action_prob(
+                next_state2)
+            state2 = self.scaler.transform(state2)
+            next_state2 = self.scaler.transform(next_state2)
+            state2, action2, reward2, next_state2 = torch.FloatTensor(
+                state2), torch.LongTensor(
+                    action2[:, np.newaxis]), torch.FloatTensor(
+                        reward2[:, np.newaxis]), torch.FloatTensor(next_state2)
+            state2_action2 = torch.cat([state2, action2], dim=-1)
+            state2_action2_tile = torch.tile(input=state2_action2,
+                                             dims=(batch_size, 1))
+            pi_next_state2_prob = torch.Tensor(pi_next_state2_prob)
+            with torch.no_grad():
+                target_Q2 = reward2 + self.gamma * torch.sum(
+                    self.target_Q_model(next_state2) * pi_next_state2_prob,
+                    dim=1,
+                    keepdim=True)
+            current_Q2 = self.Q_model(state2).gather(dim=1, index=action2)
+            td2 = target_Q2 - current_Q2
+
+            td_repeat_tile = torch.repeat_interleave(
+                input=td, repeats=batch_size, dim=0) * torch.tile(
+                    input=td2, dims=(batch_size, 1))
+            
+            kernel_dist = self._cal_dist(X1=state_action_repeat,
+                               X2=state2_action2_tile,
+                               median=self.median)
+
+            loss = torch.mean(kernel_dist * td_repeat_tile)
+
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+            self.scheduler.step()
+
+            self.losses.append(loss.detach().numpy())
+
+            if itr % target_update_frequency == 0:
+                self._target_update()
+
+            moving_window = 100
+            if itr >= moving_window:
+                mean_loss = np.mean(self.losses[(itr - moving_window + 1):itr +
+                                                1])
+            else:
+                mean_loss = np.mean(self.losses[:itr + 1])
+
+            if itr >= 10:
+                if mean_loss < min_loss:
+                    min_loss = mean_loss
+                    wait_count = 0
+                if mean_loss > min_loss * 0.99:
+                    wait_count += 1
+            if itr % print_freq == 0:
+                print("Q(s,a) training {}/{} DONE! loss = {:.5f}".format(
+                    itr, max_iter, mean_loss))
+            if patience is not None and wait_count >= patience:
+                print('wait_count reaches patience, stop training')
+                break
+
+    def _target_update(self):
+        for param, target_param in zip(self.Q_model.parameters(),
+                                       self.target_Q_model.parameters()):
+            target_param.data.copy_(param.data)
+
+    def Q(self, states, actions=None):
+        if states.ndim == 1:
+            states = np.expand_dims(states, 1)
+        states = self.scaler.transform(states)
+        states = torch.Tensor(states).to(self.device)
+
+        self.Q_model.eval()
+        Q_values = self.Q_model(states)
+
+        if actions is not None:
+            actions = torch.LongTensor(actions.reshape(-1, 1)).to(self.device)
+            return Q_values.gather(dim=1, index=actions).detach().numpy()
+        else:
+            return Q_values.detach().numpy()
+
+    def V(self, states, policy=None):
+        if states.ndim == 1:
+            states = np.expand_dims(states, 1)
+        if policy is None:
+            policy = self.target_policy
+        action_probs = policy.get_action_prob(states)
+        Q_values = self.Q(states=states, actions=None)  # (n, num_actions)
+        return np.sum(Q_values * action_probs, axis=1)
+
+    def get_state_values(self, target_policy=None, S_inits=None):
+        if target_policy is None:
+            target_policy = self.target_policy
+        if S_inits is None:
+            S_inits = self._initial_obs
+        return self.V(states=S_inits, policy=target_policy)
+
+    def get_value(self, target_policy=None, S_inits=None, MC_size=None):
+        """Calculate integrated value
+        
+        Args:
+            target_policy (callable): target policy to be evaluated.
+            S_inits (np.ndarray): initial states for policy evaluation. If both S_inits and MC_size are not 
+                specified, use initial observations from data.
+            MC_size (int): sample size for Monte Carlo approximation.
+
+        Returns:
+            est_V (float): integrated value of target policy
+        """
+        if S_inits is None:
+            if MC_size is None:
+                S_inits = self._initial_obs
+            else:
+                S_inits = self.sample_initial_states(size=MC_size,
+                                                     from_data=True)
+        if target_policy is None:
+            target_policy = self.target_policy
+
+        return np.mean(
+            self.get_state_values(target_policy=target_policy,
+                                  S_inits=S_inits))

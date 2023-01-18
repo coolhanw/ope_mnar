@@ -14,7 +14,6 @@ import gym
 from gym.spaces import Box, Discrete
 from gym.vector import VectorEnv
 from gym.utils import seeding
-import matplotlib.pyplot as plt
 
 __all__ = [
     'sigmoid', 'constant_fn', 'normcdf', 'iden', 'MinMaxScaler', 'MLPModule',

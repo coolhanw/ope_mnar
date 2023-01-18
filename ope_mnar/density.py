@@ -2,22 +2,20 @@ import numpy as np
 import torch
 import torch.nn as nn
 from scipy.interpolate import BSpline
-from functools import reduce, partial
+from functools import partial
 from itertools import product
-import time
 
 
 class StateActionVisitationModel(nn.Module):
 
     def __init__(self,
-                 state_dim,
-                 hidden_sizes,
-                 action_dim=1,
-                 output_dim=1):
+                 input_dim,
+                 output_dim,
+                 hidden_sizes):
         super().__init__()
 
         self.hidden_sizes = hidden_sizes
-        self.input_dim = state_dim + action_dim
+        self.input_dim = input_dim
 
         # build network structure
         layers = []
@@ -115,9 +113,8 @@ class StateActionVisitationRatio():
             self.action_dim = 0
 
         self.model = StateActionVisitationModel(
-            state_dim=replay_buffer.state_dim,
+            input_dim=replay_buffer.state_dim + self.action_dim,
             hidden_sizes=hidden_sizes,
-            action_dim=self.action_dim,
             output_dim=1 if not self.separate_action else self.num_actions).to(self.device)
 
         # apply between loss.backward() and optimizer.step()
@@ -128,8 +125,6 @@ class StateActionVisitationRatio():
         self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer,
                                                          step_size=100,
                                                          gamma=0.99)
-
-        self.losses = []
 
     def _compute_medians(self, n=32, rep=20):
         # do it iteratively to save memory
@@ -392,7 +387,7 @@ class StateActionVisitationRatio():
         min_loss = 1e10
 
         self.model.train()
-
+        self.losses = []
         for i in range(max_iter):
 
             transitions = self.replay_buffer.sample(
