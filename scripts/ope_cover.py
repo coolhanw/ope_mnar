@@ -32,7 +32,7 @@ parser.add_argument('--mc_size', type=int, default=250)
 parser.add_argument('--eval_policy_mc_size', type=int,
                     default=10000)  # use 100 for test purpose
 parser.add_argument('--eval_horizon', type=int, default=250)
-parser.add_argument('--dropout_scheme', type=str, default='0', choices=["0", "mnar.v0", "mar.v0"]) 
+parser.add_argument('--dropout_scheme', type=str, default='mnar.v0', choices=["0", "mnar.v0", "mar.v0"]) 
 parser.add_argument('--dropout_rate', type=float, default=0.9)
 parser.add_argument('--dropout_obs_count_thres', type=int, default=2)
 parser.add_argument('--ipw',
@@ -47,7 +47,6 @@ parser.add_argument('--bootstrap',
 parser.add_argument('--vectorize_env',
                     type=lambda x: (str(x).lower() == 'true'),
                     default=True)
-parser.add_argument('--basis_type', type=str, default='spline')
 parser.add_argument('--log_suffix', type=str, default='')  
 args = parser.parse_args()
 
@@ -87,6 +86,10 @@ if __name__ == '__main__':
                 bandwidth_factor = 2.5
         else:
             missing_mechanism = 'mar'
+    if missing_mechanism is None:
+        # no missingness, hence no need of adjustment
+        ipw = False
+        estimate_missing_prob = False
 
     log_suffix = args.log_suffix
     prob_lbound = 1e-2  # 1e-2, 1e-3
@@ -118,11 +121,8 @@ if __name__ == '__main__':
     folder_suffix += f'_ridge{ridge_factor}'
     grid_search = False
     basis_scale_factor = 100
-    basis_type = args.basis_type  # 'spline'
     if basis_scale_factor != 1:
         folder_suffix += f'_scale{int(basis_scale_factor)}'
-    if basis_type != 'spline':
-        folder_suffix += f'_{basis_type}'
     folder_suffix += log_suffix
     if scale == default_scaler:
         knots = np.linspace(start=-spline_degree / (dof - spline_degree),
@@ -245,7 +245,6 @@ if __name__ == '__main__':
             T=T,
             n=n,
             env=env_dropout,
-            basis_type=basis_type,
             L=dof,
             d=spline_degree,
             eval_T=eval_horizon,
@@ -350,7 +349,6 @@ if __name__ == '__main__':
             T=T,
             n=n,
             env=env_dropout,
-            basis_type=basis_type,
             L=dof,
             d=spline_degree,
             eval_T=eval_horizon,

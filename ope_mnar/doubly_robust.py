@@ -1,22 +1,9 @@
 import numpy as np
-import scipy
-import time
-from termcolor import colored
 import torch
-from torch import nn
-import collections
 from scipy.stats import norm
-# RL environment
-from gym.spaces import Tuple
-from gym.vector.utils.spaces import batch_space
-# visualization
-import seaborn as sns
-import matplotlib.pyplot as plt
 
 from base import SimulationBase
-from density import StateActionVisitationRatio, StateActionVisitationRatioSpline, StateActionVisitationRatioExpoLinear
-from utils import SimpleReplayBuffer, DiscretePolicy, MLPModule
-from batch_rl.dqn import QNetwork
+from utils import SimpleReplayBuffer
 
 class DRL(SimulationBase):
     """

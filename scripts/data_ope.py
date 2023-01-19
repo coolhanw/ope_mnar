@@ -120,6 +120,10 @@ if __name__ == '__main__':
         estimator_str = 'ipwMAR'
         if not estimate_missing_prob:
             estimator_str += '_propT'
+    if missing_mechanism is None:
+        # no missingness, hence no need of adjustment
+        ipw = False
+        estimate_missing_prob = False
 
     data_dir = os.path.expanduser("~/Data/mimic-iii")
     export_dir = os.path.expanduser(f'~/Projects/ope_mnar/output/sepsis')
@@ -612,7 +616,6 @@ if __name__ == '__main__':
     ##                    OPE configuration
     ########################################################################
     adaptive_dof = False  # True
-    basis_type = 'spline'
     spline_degree = 3
     ridge_factor = 1e-3 # 1e-3
     basis_scale_factor = 1. # 100
@@ -916,8 +919,7 @@ if __name__ == '__main__':
             reward_transform=reward_transform,
             burn_in=0)
         # build basis
-        if basis_type == 'spline':
-            agent.B_spline(L=max(3, dof), d=spline_degree,
+        agent.B_spline(L=max(3, dof), d=spline_degree,
                                knots=knots)
         # model behavior policy
         behavior_model_type = 'rf'
@@ -986,8 +988,7 @@ if __name__ == '__main__':
         print(f'dropout rate: {mimic_ope.dropout_rate}')
         print(f'missing rate: {mimic_ope.missing_rate}')
 
-        if basis_type == 'spline':
-            mimic_ope.B_spline(L=max(3, dof), d=spline_degree,
+        mimic_ope.B_spline(L=max(3, dof), d=spline_degree,
                                knots=knots)
 
         _ = gc.collect()

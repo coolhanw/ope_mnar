@@ -6,14 +6,11 @@ import os
 import numpy as np
 import pandas as pd
 from numpy.linalg import inv
-# from functools import reduce
-# from scipy import integrate
 from scipy.stats import norm
 import argparse
 import pathlib
 import time
 import gc
-# from collections import defaultdict, Counter
 
 try:
     from custom_env.linear2d import Linear2dEnv, Linear2dVectorEnv
@@ -31,21 +28,16 @@ parser.add_argument('--max_episode_length', type=int, default=25)  # 10, 25
 parser.add_argument('--discount', type=float, default=0.8)
 parser.add_argument('--num_trajs', type=int, default=500)  # 250, 500
 parser.add_argument('--burn_in', type=int, default=0)
-parser.add_argument('--mc_size', type=int, default=250)
+parser.add_argument('--mc_size', type=int, default=2) # 250
 parser.add_argument('--eval_policy_mc_size', type=int, default=10000)
 parser.add_argument('--eval_horizon', type=int, default=250)
-parser.add_argument('--dropout_scheme', type=str, default='0', choices=["0", "mnar.v0", "mar.v0"])  # 'mnar.v0'
+parser.add_argument('--dropout_scheme', type=str, default='mnar.v0', choices=["0", "mnar.v0", "mar.v0"])  # 'mnar.v0'
 parser.add_argument('--dropout_rate', type=float, default=0.9)
 parser.add_argument(
     '--dropout_obs_count_thres',
     type=int,
     default=2,
     help="the number of observations that is not subject to dropout")
-parser.add_argument(
-    '--method',
-    type=str,
-    default='LSTDQ',
-    help="method used to estimate the Q-function")  # 'LSTDQ', 'FQE'
 parser.add_argument('--ipw',
                     type=lambda x: (str(x).lower() == 'true'),
                     default=True)  # True
@@ -58,13 +50,13 @@ parser.add_argument('--weight_curr_step',
 parser.add_argument('--env_model_type', type=str, default='linear')
 parser.add_argument('--vectorize_env',
                     type=lambda x: (str(x).lower() == 'true'),
-                    default=True)
+                    default=False)
 args = parser.parse_args()
 
 if __name__ == '__main__':
     log_dir = os.path.expanduser('~/Projects/ope_mnar/output')
+
     env_class = args.env
-    default_scaler = "MinMax"  # "NormCdf", "MinMax"
     T = args.max_episode_length
     n = args.num_trajs
     total_N = None
@@ -77,21 +69,41 @@ if __name__ == '__main__':
     vectorize_env = args.vectorize_env
     ipw = args.ipw
     weight_curr_step = args.weight_curr_step  # if False, use survival probability
-    adaptive_dof = False
     estimate_missing_prob = args.estimate_missing_prob
-    if not ipw:
-        method = 'cc'
-    elif ipw and estimate_missing_prob:
-        method = 'ipw_propF'
-    elif ipw and not estimate_missing_prob:
-        method = 'ipw_propT'
+    eval_policy_mc_size = args.eval_policy_mc_size
+    eval_horizon = args.eval_horizon
+    eval_seed = 123
+    prob_lbound = 1e-2
+    
+    # model configuration
+    default_scaler = "MinMax"  # "NormCdf", "MinMax"
+    scale = default_scaler
+    adaptive_dof = False
+    product_tensor = True
+    grid_search = False
+    basis_scale_factor = 100  # 100
+    spline_degree = 3
+    if adaptive_dof:
+        dof = max(4, int(np.sqrt((n * T)**(3 / 7))))  # degree of freedom
+    else:
+        dof = 7
+    ridge_factor = 1e-3  # 1e-3
+    if scale == default_scaler:
+        knots = np.linspace(start=-spline_degree / (dof - spline_degree),
+                            stop=1 + spline_degree / (dof - spline_degree),
+                            num=dof + spline_degree + 1)  # handle the boundary
+    else:
+        knots = 'equivdist'  # 'equivdist', None
+
+    # dropout model configuration
+    dropout_model_type = 'linear'
     instrument_var_index = None
     mnar_y_transform = None
     bandwidth_factor = None
     if env_class.lower() == 'linear2d':
         if dropout_scheme == '0':
             missing_mechanism = None
-        elif dropout_scheme in ['mnar.v0', 'mnar.v1']:
+        elif dropout_scheme.startswith('mnar'):
             missing_mechanism = 'mnar'
             instrument_var_index = 1
             if dropout_scheme == 'mnar.v0':
@@ -100,45 +112,35 @@ if __name__ == '__main__':
                 bandwidth_factor = 2.5
         else:
             missing_mechanism = 'mar'
-
-    gamma_true = None  # 1.5, None
+    psi_true = None  # 1.5, None
     if missing_mechanism and missing_mechanism.lower() == 'mnar':
-        initialize_with_gammaT = False
+        initialize_with_psiT = False
+    if missing_mechanism is None:
+        # no missingness, hence no need of adjustment
+        ipw = False
+        estimate_missing_prob = False
 
-    prop = 'propT' if not estimate_missing_prob else 'propF'
-    train_opt_policy = False
-    eval_policy_mc_size = args.eval_policy_mc_size  # 10000
-    eval_horizon = args.eval_horizon  # 500
-    folder_suffix = ''  # '_unscaled'
+    # filename suffix configuration
+    if not ipw:
+        weighting_method = 'cc'
+    elif ipw and estimate_missing_prob:
+        weighting_method = 'ipw_propF'
+    elif ipw and not estimate_missing_prob:
+        weighting_method = 'ipw_propT'
+    folder_suffix = ''
     folder_suffix += f'_missing{dropout_rate}'
-
-    scale = default_scaler
-    eval_seed = 123
-    dropout_model_type = 'linear'
-    product_tensor = True
-    prob_lbound = 1e-2
-
-    grid_search = False
-    basis_scale_factor = 100  # 100
-    basis_type = 'spline'
-    spline_degree = 3
-
-    if adaptive_dof:
-        dof = max(4, int(np.sqrt((n * T)**(3 / 7))))  # degree of freedom
-    else:
-        dof = 7
-    ridge_factor = 1e-3  # 1e-3
     folder_suffix += f'_ridge{ridge_factor}'
     if basis_scale_factor != 1:
         folder_suffix += f'_scale{int(basis_scale_factor)}'
-    if basis_type != 'spline':
-        folder_suffix += f'_{basis_type}'
-    if scale == default_scaler:
-        knots = np.linspace(start=-spline_degree / (dof - spline_degree),
-                            stop=1 + spline_degree / (dof - spline_degree),
-                            num=dof + spline_degree + 1)  # handle the boundary
-    else:
-        knots = 'equivdist'  # 'equivdist', None
+
+    export_dir = os.path.join(
+        log_dir,
+        f'{env_class}_est_value{folder_suffix}/T_{T}_n_{n}_L_{dof}_gamma{gamma}_dropout_{dropout_scheme}'
+    )
+    true_value_dir = os.path.join(log_dir,
+                                  f'{env_class}_est_value{folder_suffix}')
+    true_value_dir
+    pathlib.Path(export_dir).mkdir(parents=True, exist_ok=True)
 
     print('Configuration:')
     print(f'T : {T}')
@@ -151,10 +153,7 @@ if __name__ == '__main__':
     print(f'estimate_missing_prob : {estimate_missing_prob}')
     print(f'eval_policy_mc_size : {eval_policy_mc_size}')
     print(f'eval_horizon : {eval_horizon}')
-    print(
-        f'Logged to folder: T_{T}_n_{n}_L_{dof}_gamma{gamma}_dropout_{dropout_scheme}'
-    )
-
+    print(f'Logged to folder: {export_dir}')
     
     np.random.seed(seed=eval_seed)
     default_key = 'C'
@@ -221,19 +220,6 @@ if __name__ == '__main__':
     else:
         raise NotImplementedError
 
-    train_dir = os.path.join(
-        log_dir,
-        f'{env_class}_est_Q_func{folder_suffix}/T_{T}_n_{n}_L_{dof}_gamma{gamma}_dropout_{dropout_scheme}'
-    )
-    value_dir = os.path.join(
-        log_dir,
-        f'{env_class}_est_value{folder_suffix}/T_{T}_n_{n}_L_{dof}_gamma{gamma}_dropout_{dropout_scheme}'
-    )
-    true_value_dir = os.path.join(log_dir,
-                                  f'{env_class}_est_value{folder_suffix}')
-    pathlib.Path(train_dir).mkdir(parents=True, exist_ok=True)
-    pathlib.Path(value_dir).mkdir(parents=True, exist_ok=True)
-
     V_est_list = []
     for itr in range(mc_size):
         np.random.seed(itr)
@@ -245,13 +231,12 @@ if __name__ == '__main__':
         else:
             train_S_inits = None
         if ipw:
-            suffix = f'ipw_{prop}_itr_{itr}'
+            suffix = f'{weighting_method}_itr_{itr}'
         else:
             suffix = f'itr_{itr}'
         filename_train = f'train_with_T_{T}_n_{n}_L_{dof}_gamma{gamma}_dropout_{dropout_scheme}_{suffix}'
         filename_value_int = f'value_int_with_T_{T}_n_{n}_L_{dof}_gamma{gamma}_dropout_{dropout_scheme}_{suffix}'
         filename_value = f'value_with_T_{T}_n_{n}_L_{dof}_gamma{gamma}_dropout_{dropout_scheme}_{suffix}'
-        # filename_data = f'train_data_T_{T}_n_{n}_L_{dof}_gamma{gamma}_dropout_{dropout_scheme}_{suffix}.csv'
         filename_true_value = f'{env_class}_true_value_T_{eval_horizon}_gamma{gamma}_size{eval_policy_mc_size}'
 
         print('Train Q-function...')
@@ -260,14 +245,13 @@ if __name__ == '__main__':
             T=T,
             n=n,
             env=env_dropout,
-            basis_type=basis_type,
             L=dof,
             d=spline_degree,
             knots=knots,
             total_N=total_N,
             burn_in=burn_in,
             target_policy=policy,
-            export_dir=train_dir,
+            export_dir=export_dir,
             scale=scale,
             product_tensor=product_tensor,
             discount=gamma,
@@ -280,8 +264,8 @@ if __name__ == '__main__':
             missing_mechanism=missing_mechanism,
             instrument_var_index=instrument_var_index,
             mnar_y_transform=mnar_y_transform,
-            gamma_init=None if missing_mechanism == 'mnar'
-            and not initialize_with_gammaT else gamma_true,
+            psi_init=None if missing_mechanism == 'mnar'
+            and not initialize_with_psiT else psi_true,
             bandwidth_factor=bandwidth_factor,
             ridge_factor=ridge_factor,
             grid_search=grid_search,
@@ -309,10 +293,10 @@ if __name__ == '__main__':
             vf_mc_size=eval_policy_mc_size,
             target_policy=policy,
             use_vector_env=vectorize_env,
-            import_dir=train_dir,
+            import_dir=export_dir,
             filename_train=filename_train,
             filename_true_value=filename_true_value,
-            export_dir=value_dir,
+            export_dir=export_dir,
             value_import_dir=true_value_dir,
             scale=scale,
             product_tensor=product_tensor,

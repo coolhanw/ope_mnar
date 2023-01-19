@@ -3,7 +3,6 @@
 import os
 import numpy as np
 import pickle
-from termcolor import colored
 import torch
 from sklearn.preprocessing import StandardScaler
 
@@ -182,7 +181,7 @@ class MWL(SimulationBase):
             est_omega * rewards * inverse_wts)
 
         if self.verbose:
-            print(colored("IS = {:.2f}".format(V_int_IS), 'red'))
+            print("IS = {:.2f}".format(V_int_IS))
 
         return V_int_IS
 
@@ -459,6 +458,6 @@ class NeuralDualDice(SimulationBase):
 
         V_int_IS = 1 / (1 - self.gamma) * np.mean(est_omega * rewards)
         if self.verbose:
-            print(colored("IS = {:.2f}".format(V_int_IS), 'red'))
+            print("IS = {:.2f}".format(V_int_IS))
 
         return V_int_IS

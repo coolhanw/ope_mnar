@@ -6,7 +6,6 @@ import os
 import pickle
 import time
 import collections
-from termcolor import colored
 from functools import reduce, partial
 from itertools import product
 from scipy.stats import norm
@@ -41,21 +40,21 @@ class LSTDQ(SimulationBase):
                  env=None,
                  n=500,
                  horizon=None,
-                 scale="NormCdf",
-                 product_tensor=True,
                  discount=0.8,
                  eval_env=None,
+                 scale="MinMax",
+                 product_tensor=True,
                  basis_scale_factor=1.):
         """
         Args:
             env (gym.Env): dynamic environment
             n (int): the number of subjects (trajectories)
             horizon (int): the maximum length of trajectories
+            discount (float): discount factor
+            eval_env (gym.Env): dynamic environment to evaluate the policy, if not specified, use env
             scale (str): scaler to transform state features onto [0,1], 
                 select from "NormCdf", "Identity", "MinMax", or a path to a fitted scaler
             product_tensor (bool): if True, use product tensor to construct basis
-            discount (float): discount factor
-            eval_env (gym.Env): dynamic environment to evaluate the policy, if not specified, use env
             basis_scale_factor (float): a multiplier to basis in order to avoid extremely small value
         """
 
@@ -80,11 +79,8 @@ class LSTDQ(SimulationBase):
             with open(scale, 'rb') as f:
                 self.scaler = pickle.load(f)
 
-        self.para_dim = None  # the dimension of parameter built in basis spline
         self.product_tensor = product_tensor
         self.basis_scale_factor = basis_scale_factor
-        self.bspline = None
-        self.knot = None  # quantile knots for basis spline
 
     def export_buffer(self, eval_Q=False):
         """Convert unscaled trajectories in self.masked_buffer to a dataframe.
@@ -479,7 +475,7 @@ class LSTDQ(SimulationBase):
         rewards = np.vstack(reward_list)  # (total_T, 1)
         inverse_wts = np.vstack(inverse_wt_list).astype(float)  # (total_T, 1)
         del training_buffer
-        print(f'pseudo sample size: {inverse_wts.sum()}')
+        print(f'pseudo sample size: {int(inverse_wts.sum())}')
 
         Xi_mat = self._Xi(states=obs,
                           actions=actions)  # (n, para_dim*num_actions)
@@ -569,11 +565,38 @@ class LSTDQ(SimulationBase):
                    L=10,
                    d=3,
                    knots=None,
+                   scale="MinMax",
+                   product_tensor=True,
+                   basis_scale_factor=1.,
                    grid_search=False,
                    verbose=True,
                    subsample_index=None):
-        """Main function for estimating the parameters for the Q-function."""
+        """Main function for estimating the parameters for the Q-function.
 
+        Args:
+            scale (str): scaler to transform state features onto [0,1], 
+                select from "NormCdf", "Identity", "MinMax", or a path to a fitted scaler
+            product_tensor (bool): if True, use product tensor to construct basis
+            basis_scale_factor (float): a multiplier to basis in order to avoid extremely small value
+        """
+        # scaler to transform state features onto [0,1]
+        if scale == "NormCdf":
+            self.scaler = normcdf()
+        elif scale == "Identity":
+            self.scaler = iden()
+        elif scale == "MinMax":
+            self.scaler = MinMaxScaler(
+                min_val=self.env.low,
+                max_val=self.env.high) if self.env is not None else MinMaxScaler()
+        else:
+            # a path to a fitted scaler
+            assert os.path.exists(scale)
+            with open(scale, 'rb') as f:
+                self.scaler = pickle.load(f)
+
+        self.product_tensor = product_tensor
+        self.basis_scale_factor = basis_scale_factor
+        
         self.target_policy = target_policy
 
         self.B_spline(L=L, d=d, knots=knots)
@@ -1391,11 +1414,8 @@ class FQE(SimulationBase):
                 values = self.Q(self._initial_obs,
                                 action_init_states)  # call model.eval() inside
                 est_value = np.mean(values)
-                print(
-                    colored(
-                        "[iteration {}] V = {:.2f} with diff = {:.4f} and std_init_Q = {:.1f}"
-                        .format(itr, est_value, target_diff,
-                                np.std(values)), 'green'))
+                print("[iteration {}] V = {:.2f} with diff = {:.4f} and std_init_Q = {:.1f}"
+                        .format(itr, est_value, target_diff, np.std(values)))
             if itr > 0 and target_diff < tol:
                 break
 

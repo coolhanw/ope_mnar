@@ -382,9 +382,9 @@ class Linear2dEnv(SimEnv):
         super().__init__(T=T,
                          dim=2,
                          num_actions=2,
-                         vec_state_trans_model=state_trans_model,
-                         vec_reward_model=reward_model,
-                         vec_dropout_model=partial_vec_dropout_model,
+                         state_trans_model=state_trans_model,
+                         reward_model=reward_model,
+                         dropout_model=partial_vec_dropout_model,
                          low=low,
                          high=high,
                          dtype=np.float32)

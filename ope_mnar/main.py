@@ -15,7 +15,6 @@ def train_Q_func(
         T=30,
         n=25,
         env=None,
-        basis_type='spline',
         L=None,
         d=3,
         knots=None,
@@ -35,7 +34,7 @@ def train_Q_func(
         missing_mechanism=None,
         instrument_var_index=None,
         mnar_y_transform=None,
-        gamma_init=None,
+        psi_init=None,
         bandwidth_factor=1.5,
         ridge_factor=0.,
         grid_search=False,
@@ -52,7 +51,6 @@ def train_Q_func(
         T (int): maximum horizon of observed trajectories
         n (int): number of observed trajectories
         env (gym.Env): environment
-        basis_type (str): basis type, current only support 'spline'
         L (int): number of basis function (degree of freedom)
         d (int): B-spline degree
         knots (str or np.ndarray): location of knots
@@ -75,7 +73,7 @@ def train_Q_func(
         missing_mechanism (str): "mnar" or "mar"
         instrument_var_index (int): index of the instrument variable
         mnar_y_transform (callable): input next_obs and reward, output Y term for the mnar dropout model
-        gamma_init (float): initial value for gamma in MNAR estimation
+        psi_init (float): initial value for psi in MNAR estimation
         bandwidth_factor (float): the constant used in bandwidth calculation
         ridge_factor (float): ridge penalty parameter
         grid_search (bool): if True, use grid search to select the optimal ridge_factor
@@ -126,10 +124,7 @@ def train_Q_func(
     config_str = f'configuraion: T = {T}, n = {n}, discount = {discount}, L = {L}, ipw = {ipw}, aipw = False, estimate_missing_prob = {estimate_missing_prob}'
     print(config_str)
 
-    if basis_type=='spline':
-        agent.B_spline(L=max(3, L), d=spline_degree, knots=knots)
-    else:
-        raise NotImplementedError
+    agent.B_spline(L=max(3, L), d=spline_degree, knots=knots)
     
     if missing_mechanism is None:
         # no missingness, hence no need of adjustment
@@ -155,7 +150,7 @@ def train_Q_func(
             include_reward=dropout_include_reward,
             instrument_var_index=instrument_var_index,
             mnar_y_transform=mnar_y_transform,
-            gamma_init=gamma_init, 
+            psi_init=psi_init, 
             bandwidth_factor=bandwidth_factor,
             verbose=True)
         print('Start estimating dropout probability...')
@@ -407,7 +402,6 @@ def eval_V_int_CI_multi(
         T=30,
         n=500,
         env=None,
-        basis_type='spline',
         L=None,
         d=3,
         eval_T=250,
@@ -434,7 +428,7 @@ def eval_V_int_CI_multi(
         missing_mechanism='mar',
         instrument_var_index=None,
         mnar_y_transform=None,
-        gamma_init=None,
+        psi_init=None,
         bandwidth_factor=1.5,
         value_import_dir=None,
         export_dir=None,
@@ -572,7 +566,7 @@ def eval_V_int_CI_multi(
     est_V_int_std_list = defaultdict(list)
     est_V_mse_list = defaultdict(list)
     max_inverse_wt_list = []
-    mnar_gamma_est_list, dropout_prob_mse_list = [], []
+    mnar_psi_est_list, dropout_prob_mse_list = [], []
     beta_list, Sigma_hat_list, inv_Sigma_hat_list, vector_list = [], [], [], []
     i = 0
     count = {k: defaultdict(int) for k in eval_S_inits_dict.keys()}
@@ -599,10 +593,8 @@ def eval_V_int_CI_multi(
         print(f'dropout rate: {agent.dropout_rate}')
         print(f'missing rate: {agent.missing_rate}')
         print(f'total_N: {agent.total_N}')
-        if basis_type == 'spline':
-            agent.B_spline(L=max(3, L), d=spline_degree, knots=knots)
-        else:
-            raise NotImplementedError
+        agent.B_spline(L=max(3, L), d=spline_degree, knots=knots)
+
         if estimate_missing_prob:
             print(f'Fit dropout model : {missing_mechanism}')
             pathlib.Path(os.path.join(export_dir,
@@ -623,7 +615,7 @@ def eval_V_int_CI_multi(
                 include_reward=dropout_include_reward, # True, False
                 instrument_var_index=instrument_var_index,
                 mnar_y_transform=mnar_y_transform,
-                gamma_init=gamma_init,
+                psi_init=psi_init,
                 bandwidth_factor=bandwidth_factor,
                 verbose=True)
             agent.estimate_missing_prob(missing_mechanism=missing_mechanism)
@@ -631,7 +623,7 @@ def eval_V_int_CI_multi(
             print(f'Finished! {fit_dropout_end-fit_dropout_start} secs elapsed.')
             dropout_prob_mse_list.append(agent._dropout_prob_mse)
             if missing_mechanism.lower() == 'mnar':
-                mnar_gamma_est_list.append(agent.fitted_dropout_model['model'].gamma_hat)
+                mnar_psi_est_list.append(agent.fitted_dropout_model['model'].psi_hat)
 
         print('Make inference on the integrated value...')
         for k in eval_S_inits_dict.keys():
@@ -690,7 +682,7 @@ def eval_V_int_CI_multi(
                 'true_V_int': est_mean,
                 'est_V_mse_list': est_V_mse_list,
                 'max_inverse_wt_list': max_inverse_wt_list,
-                'mnar_gamma_est_list': mnar_gamma_est_list if ipw and estimate_missing_prob and missing_mechanism.lower() == 'mnar' else None,
+                'mnar_psi_est_list': mnar_psi_est_list if ipw and estimate_missing_prob and missing_mechanism.lower() == 'mnar' else None,
                 'dropout_prob_mse_list': dropout_prob_mse_list if ipw else None,
                 'beta_list': beta_list,
                 'Sigma_hat_list': Sigma_hat_list,
@@ -712,7 +704,6 @@ def eval_V_int_CI_bootstrap_multi(
         T=30,
         n=500,
         env=None,
-        basis_type='spline',
         L=None,
         d=3,
         eval_T=250,
@@ -740,7 +731,7 @@ def eval_V_int_CI_bootstrap_multi(
         missing_mechanism='mar',
         instrument_var_index=None,
         mnar_y_transform=None,
-        gamma_init=None,
+        psi_init=None,
         bandwidth_factor=1.5,
         value_import_dir=None,
         export_dir=None,
@@ -878,7 +869,7 @@ def eval_V_int_CI_bootstrap_multi(
     bootstrap_V_int_std_list = defaultdict(list)
     est_V_mse_list = defaultdict(list)
     max_inverse_wt_list = []
-    mnar_gamma_est_list, dropout_prob_mse_list = [], []
+    mnar_psi_est_list, dropout_prob_mse_list = [], []
     beta_list, Sigma_hat_list, inv_Sigma_hat_list, vector_list = [], [], [], []
     i = 0
     count = {k: defaultdict(int) for k in eval_S_inits_dict.keys()}
@@ -909,10 +900,9 @@ def eval_V_int_CI_bootstrap_multi(
         print(f'dropout rate: {agent.dropout_rate}')
         print(f'missing rate: {agent.missing_rate}')
         print(f'total_N: {agent.total_N}')
-        if basis_type == 'spline':
-            agent.B_spline(L=max(3, L), d=spline_degree, knots=knots)
-        else:
-            raise NotImplementedError
+
+        agent.B_spline(L=max(3, L), d=spline_degree, knots=knots)
+        
         if estimate_missing_prob:
             print(f'Fit dropout model : {missing_mechanism}')
             pathlib.Path(os.path.join(export_dir,
@@ -933,7 +923,7 @@ def eval_V_int_CI_bootstrap_multi(
                 include_reward=dropout_include_reward,
                 instrument_var_index=instrument_var_index,
                 mnar_y_transform=mnar_y_transform,
-                gamma_init=gamma_init,
+                psi_init=psi_init,
                 bandwidth_factor=bandwidth_factor,
                 verbose=True)
             agent.estimate_missing_prob(missing_mechanism=missing_mechanism)
@@ -941,7 +931,7 @@ def eval_V_int_CI_bootstrap_multi(
             print(f'Finished! {fit_dropout_end-fit_dropout_start} secs elapsed.')
             dropout_prob_mse_list.append(agent._dropout_prob_mse)
             if missing_mechanism.lower() == 'mnar':
-                mnar_gamma_est_list.append(agent.fitted_dropout_model['model'].gamma_hat)
+                mnar_psi_est_list.append(agent.fitted_dropout_model['model'].psi_hat)
 
         print('Make inference on the integrated value...')
         for k in eval_S_inits_dict.keys():
@@ -1004,7 +994,7 @@ def eval_V_int_CI_bootstrap_multi(
                     include_reward=dropout_include_reward,
                     instrument_var_index=instrument_var_index,
                     mnar_y_transform=mnar_y_transform,
-                    gamma_init=gamma_init,
+                    psi_init=psi_init,
                     bandwidth_factor=bandwidth_factor,
                     verbose=False)
                 agent.estimate_missing_prob(missing_mechanism=missing_mechanism,subsample_index=selected_key)
@@ -1057,7 +1047,7 @@ def eval_V_int_CI_bootstrap_multi(
                 'true_V_int': est_mean,
                 'est_V_mse_list': est_V_mse_list,
                 'max_inverse_wt_list': max_inverse_wt_list,
-                'mnar_gamma_est_list': mnar_gamma_est_list if ipw and estimate_missing_prob and missing_mechanism.lower() == 'mnar' else None,
+                'mnar_psi_est_list': mnar_psi_est_list if ipw and estimate_missing_prob and missing_mechanism.lower() == 'mnar' else None,
                 'dropout_prob_mse_list': dropout_prob_mse_list if ipw else None,
                 'beta_list': beta_list,
                 'Sigma_hat_list': Sigma_hat_list,

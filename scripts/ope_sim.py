@@ -40,7 +40,7 @@ parser.add_argument('--max_episode_length', type=int, default=25)  # 10, 25
 parser.add_argument('--discount', type=float, default=0.8)
 parser.add_argument('--num_trajs', type=int, default=500) # 250, 500
 parser.add_argument('--burn_in', type=int, default=0)
-parser.add_argument('--mc_size', type=int, default=2)
+parser.add_argument('--mc_size', type=int, default=1) # 250
 parser.add_argument('--eval_policy_mc_size', type=int, default=50000) # 10000
 parser.add_argument('--eval_horizon', type=int, default=250)
 parser.add_argument('--dropout_scheme', type=str, default='mar.v0', choices=["0", "mnar.v0", "mar.v0"])
@@ -98,7 +98,6 @@ if __name__ == '__main__':
         adaptive_dof = False
         # spline related configuration
         basis_scale_factor = 100 # 1, 100
-        basis_type = 'spline'
         spline_degree = 3
         if adaptive_dof:
             dof = max(4, int(np.sqrt((n * T)**(3/7)))) # degree of freedom
@@ -137,16 +136,16 @@ if __name__ == '__main__':
     
     # filename suffix configuration
     if not ipw:
-        method = 'cc'
+        weighting_method = 'cc'
     elif ipw and estimate_missing_prob:
-        method = 'ipw_propF'
+        weighting_method = 'ipw_propF'
     elif ipw and not estimate_missing_prob:
-        method = 'ipw_propT'
+        weighting_method = 'ipw_propT'
     folder_suffix = ''
     folder_suffix += f'_missing{dropout_rate}' # add here
     export_dir = os.path.join(
         log_dir, 
-        f'{env_class}{folder_suffix}/{ope_method}_T_{T}_n_{n}_gamma{gamma}_dropout_{dropout_scheme}'
+        f'{env_class}{folder_suffix}/T_{T}_n_{n}_gamma{gamma}_dropout_{dropout_scheme}_{weighting_method}'
     )
     pathlib.Path(export_dir).mkdir(parents=True, exist_ok=True)
 
@@ -253,21 +252,19 @@ if __name__ == '__main__':
             pickle.dump(true_value_dict, outfile)
     else:
         with open(true_value_path,'rb') as outfile:
-            true_value_dict = pickle.load(outfile)  
-        true_value_int = {}
-        for k in eval_S_inits_dict.keys():
-            true_value_int[k] = true_value_dict[k]['true_value_int']    
+            true_value_dict = pickle.load(outfile)    
 
     # main part for value estimation simulation
     verbose = True
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     value_est_summary = {}
-    value_est_summary_path = os.path.join(export_dir, 'value_est_summary')
+    value_est_summary_path = os.path.join(export_dir, f'{ope_method}_value_est_summary')
     for initial_key in eval_S_inits_dict.keys():
         value_est_list = []
+        true_value_int = true_value_dict[initial_key]['true_value_int']
         for itr in range(mc_size):
             seed = itr
-            suffix = f'{method}_itr_{itr}'
+            suffix = f'{weighting_method}_itr_{itr}'
             # np.random.seed(seed)
             # if the observational space of the environemnt is bounded, the initial states will only be sampled from uniform distribution
             # if we still want a normal distribution, pass random initial states manually.
@@ -314,11 +311,8 @@ if __name__ == '__main__':
                     n=n,
                     horizon=T + burn_in,
                     discount=gamma,
-                    eval_env=env,
-                    scale="MinMax",
-                    product_tensor=True,
-                    basis_scale_factor=basis_scale_factor
-                ) # TODO: put scale, basis_scale_factor, product_tensor to self.estimate_Q()
+                    eval_env=env
+                )
             elif ope_method == 'mql':
                 agent = MQL(
                     env=env_dropout,
@@ -352,11 +346,10 @@ if __name__ == '__main__':
 
             # estimate dropout probability
             if estimate_missing_prob:
-                print(f'Fit dropout model : {missing_mechanism}')
                 model_suffix = suffix
                 pathlib.Path(os.path.join(export_dir, 'models')).mkdir(parents=True,
                                                                     exist_ok=True)
-                print('Start fitting dropout model...')
+                print(f'Fit dropout model ({missing_mechanism})')
                 fit_dropout_start = time.time()
                 agent.train_dropout_model(
                     model_type=dropout_model_type,
@@ -371,9 +364,10 @@ if __name__ == '__main__':
                     include_reward=True,
                     instrument_var_index=instrument_var_index,
                     mnar_y_transform=mnar_y_transform,
-                    gamma_init=None if missing_mechanism=='mnar' and not initialize_with_psiT else psi_true,
+                    psi_init=None if missing_mechanism=='mnar' and not initialize_with_psiT else psi_true,
                     bandwidth_factor=bandwidth_factor,
                     verbose=True)
+                print(f'Estimate dropout propensities')
                 agent.estimate_missing_prob(missing_mechanism=missing_mechanism)
                 fit_dropout_end = time.time()
                 print(f'Finished! {fit_dropout_end-fit_dropout_start} secs elapsed.')
@@ -516,13 +510,16 @@ if __name__ == '__main__':
                                 L=max(3, dof),
                                 d=spline_degree,
                                 knots=knots,
+                                scale="MinMax",
+                                product_tensor=True,
+                                basis_scale_factor=basis_scale_factor,
                                 grid_search=False,
                                 verbose=True)
                 value_est = agent.get_value(S_inits=eval_S_inits_dict[initial_key])
-                # print(value_est)
                 value_interval_est = agent.get_value_interval(S_inits=eval_S_inits_dict[initial_key], alpha=0.05)
-                # print(value_interval_est)
                 if mc_size == 1:
+                    print('value est:', value_est)
+                    print('value interval:', value_interval_est)
                     agent.validate_Q(grid_size=10, visualize=True) # sanity check
             elif ope_method == 'mql':
                 agent.estimate_Q(
@@ -598,18 +595,18 @@ if __name__ == '__main__':
         
         if mc_size > 1:
             print(f'initial state scheme:', initial_key)
-            print(f'[true V_int] {true_value_int[initial_key]}')
+            print(f'[true V_int] {true_value_int}')
             print(
                 '[est V_int] average:', round(np.mean(value_est_list),3), 
                 'std:', round(np.std(value_est_list, ddof=1),3),
-                'bias:', round(np.mean(value_est_list) - true_value_int[initial_key],3),
-                'RMSE:', round(np.mean((np.array(value_est_list) - true_value_int[initial_key]) ** 2),3)
+                'bias:', round(np.mean(value_est_list) - true_value_int,3),
+                'RMSE:', round(np.mean((np.array(value_est_list) - true_value_int) ** 2),3)
             )
 
-        value_est_summary[k] = {
+        value_est_summary[initial_key] = {
             'initial_states': eval_S_inits_dict[initial_key],
             'value_est_list': value_est_list,
-            'true_value_int': true_value_int[initial_key]
+            'true_value_int': true_value_int
         }
 
     with open(value_est_summary_path,'wb') as outfile:

@@ -126,11 +126,11 @@ class ExpoTiltingClassifierMNAR():
         y_dim = y.shape[1]
         y = np.nan_to_num(y, nan=0)
 
-        def expg_hat(u, gamma, bandwidth):
+        def expg_hat(u, psi, bandwidth):
             """
             Args:
                 u (np.ndarray): dimension (n,u_dim)
-                gamma (np.ndarray): dimension (y_dim,)
+                psi (np.ndarray): dimension (y_dim,)
                 bandwidth (np.ndarray): dimension (n,u_dim,u_dim)
                 
             Returns:
@@ -163,11 +163,11 @@ class ExpoTiltingClassifierMNAR():
                     (2 * math.pi)**u_dim * np.linalg.det(bandwidth).reshape(
                         size, 1))**(1 / 2)  # (n,k)
                 self.kernel = kernel
-            gamma_y = np.clip(
-                np.dot(y, gamma).reshape(-1, 1), -709.78,
+            psi_y = np.clip(
+                np.dot(y, psi).reshape(-1, 1), -709.78,
                 709.78)  # (k,1), use the bounds to avoid overflow
             est = np.sum(np.dot(self.kernel, 1 - delta), axis=1) / np.sum(
-                np.dot(self.kernel, delta * np.exp(gamma_y)), axis=1)  # (n,1)
+                np.dot(self.kernel, delta * np.exp(psi_y)), axis=1)  # (n,1)
             return est
 
         return expg_hat
@@ -203,18 +203,18 @@ class ExpoTiltingClassifierMNAR():
         delta = delta.squeeze()
         z = z.squeeze()
 
-        def estEq(gamma):
+        def estEq(psi):
             """
             Args:
-                gamma (np.ndarray): dimension (y_dim,)
+                psi (np.ndarray): dimension (y_dim,)
             """
-            gamma_y = np.clip(np.dot(y, gamma), -709.78,
+            psi_y = np.clip(np.dot(y, psi), -709.78,
                               709.78)  # dimension (k,), clip to avoid overflow
             if self.kernel is None:
-                expg_est = expg_func(u=u, gamma=gamma, bandwidth=bandwidth)
+                expg_est = expg_func(u=u, psi=psi, bandwidth=bandwidth)
             else:
-                expg_est = expg_func(u=u, gamma=gamma, bandwidth=None)
-            pi = 1 / (1 + expg_est * np.exp(gamma_y))  # (k,)
+                expg_est = expg_func(u=u, psi=psi, bandwidth=None)
+            pi = 1 / (1 + expg_est * np.exp(psi_y))  # (k,)
             pi[delta == 0] = 1.
             assert delta.shape == pi.shape
             v = delta / pi - 1
@@ -229,7 +229,7 @@ class ExpoTiltingClassifierMNAR():
 
         return estEq
 
-    def estimate_gamma(self,
+    def estimate_psi(self,
                        L,
                        z,
                        u,
@@ -237,10 +237,10 @@ class ExpoTiltingClassifierMNAR():
                        delta,
                        bandwidth=None,
                        seed=None,
-                       gamma_init=None,
+                       psi_init=None,
                        bounds=None,
                        verbose=True):
-        """Estimate gamma.
+        """Estimate psi.
         
         Args:
             L (int): number of bins to discretize the instrument variable
@@ -250,12 +250,12 @@ class ExpoTiltingClassifierMNAR():
             delta (np.ndarray): dimension (k,1)
             bandwidth (np.ndarray): dimension (k,u_dim,u_dim)
             seed (int): random seed to general initial values
-            gamma_init (int or np.ndarray): initial value of gamma, only used in simulation
+            psi_init (int or np.ndarray): initial value of psi, only used in simulation
             bounds (tuple): bounds for value search
             verbose (bool): If True, print intermediate results
             
         Returns:
-            gamma_hat (int or np.ndarray)
+            psi_hat (int or np.ndarray)
         """
         if len(u.shape) == 1:
             u = u.reshape(-1, 1)
@@ -280,48 +280,48 @@ class ExpoTiltingClassifierMNAR():
                                                  aggregate='mean',
                                                  expg_func=self.expg_func)
 
-            def estEq_sq(gamma):
-                M_mean = self.estEq(gamma)
+            def estEq_sq(psi):
+                M_mean = self.estEq(psi)
                 return np.matmul(M_mean.T, M_mean)
 
-            gamma_hat_list = []
+            psi_hat_list = []
             estEq_sq_list = []
             # try several initial values to avoid local optimum
             reps = 5
-            if not gamma_init:
-                gamma_init_list = np.random.normal(size=(reps, y_dim))
+            if not psi_init:
+                psi_init_list = np.random.normal(size=(reps, y_dim))
             else:
-                gamma_init_list = np.tile(np.array(gamma_init).reshape((
+                psi_init_list = np.tile(np.array(psi_init).reshape((
                     1,
                     y_dim,
                 )),
                                           reps=(reps, 1))
             for i in range(reps):
-                gamma_init = gamma_init_list[i].reshape((y_dim, ))
-                gamma_hat = minimize(fun=estEq_sq,
-                                     x0=gamma_init,
+                psi_init = psi_init_list[i].reshape((y_dim, ))
+                psi_hat = minimize(fun=estEq_sq,
+                                     x0=psi_init,
                                      bounds=bounds,
                                      method='L-BFGS-B')
-                gamma_hat_list.append(gamma_hat.x)
-                estEq_sq_list.append(estEq_sq(gamma_hat.x))
+                psi_hat_list.append(psi_hat.x)
+                estEq_sq_list.append(estEq_sq(psi_hat.x))
                 if verbose:
-                    print(f'gamma_init: {gamma_init}')
-                    print(f'estEq(gamma_init): {estEq_sq(gamma_init)}')
-                    print(f'estEq({gamma_hat.x}): {estEq_sq(gamma_hat.x)}')
-            gamma_hat = gamma_hat_list[np.argmin(estEq_sq_list)]
-            # expg_hat = self.expg_func(u=u, gamma=-0.5, bandwidth=bandwidth)
-            # gamma_y = np.clip(np.dot(y, (-0.5, )), -709.78, 709.78)  # (k,)
-            # pi_hat = 1 / (1 + expg_hat * np.exp(gamma_y))
-            # logit = np.log(expg_hat) + gamma_y
+                    print(f'psi_init: {psi_init}')
+                    print(f'estEq(psi_init): {estEq_sq(psi_init)}')
+                    print(f'estEq({psi_hat.x}): {estEq_sq(psi_hat.x)}')
+            psi_hat = psi_hat_list[np.argmin(estEq_sq_list)]
+            # expg_hat = self.expg_func(u=u, psi=-0.5, bandwidth=bandwidth)
+            # psi_y = np.clip(np.dot(y, (-0.5, )), -709.78, 709.78)  # (k,)
+            # pi_hat = 1 / (1 + expg_hat * np.exp(psi_y))
+            # logit = np.log(expg_hat) + psi_y
             expg_hat = self.expg_func(u=u,
-                                      gamma=gamma_hat,
+                                      psi=psi_hat,
                                       bandwidth=bandwidth)
-            gamma_y = np.clip(np.dot(y, gamma_hat), -709.78, 709.78)  # (k,)
-            pi_hat = 1 / (1 + expg_hat * np.exp(gamma_y))
-            logit = np.log(expg_hat) + gamma_y
+            psi_y = np.clip(np.dot(y, psi_hat), -709.78, 709.78)  # (k,)
+            pi_hat = 1 / (1 + expg_hat * np.exp(psi_y))
+            logit = np.log(expg_hat) + psi_y
             if verbose:
                 print(
-                    f'expg_hat (gamma={round(gamma_hat[0],3)})',
+                    f'expg_hat (psi={round(psi_hat[0],3)})',
                     '0.0/0.25/0.5/0.75/1.0 quantile:{0:.2f}/{1:.2f}/{2:.2f}/{3:.2f}/{4:.2f}'
                     .format(np.nanmin(expg_hat),
                             np.nanquantile(expg_hat, 0.25),
@@ -329,21 +329,21 @@ class ExpoTiltingClassifierMNAR():
                             np.nanquantile(expg_hat,
                                            0.75), np.nanmax(expg_hat)))
                 print(
-                    f'logit (gamma={round(gamma_hat[0],3)})',
+                    f'logit (psi={round(psi_hat[0],3)})',
                     '0.0/0.25/0.5/0.75/1.0 quantile:{0:.2f}/{1:.2f}/{2:.2f}/{3:.2f}/{4:.2f}'
                     .format(np.nanmin(logit), np.nanquantile(logit, 0.25),
                             np.nanquantile(logit, 0.5),
                             np.nanquantile(logit, 0.75), np.nanmax(logit)))
                 print(
-                    f'pi_hat (gamma={round(gamma_hat[0],3)})',
+                    f'pi_hat (psi={round(psi_hat[0],3)})',
                     '0.0/0.25/0.5/0.75/1.0 quantile:{0:.2f}/{1:.2f}/{2:.2f}/{3:.2f}/{4:.2f}'
                     .format(np.nanmin(pi_hat), np.nanquantile(pi_hat, 0.25),
                             np.nanquantile(pi_hat, 0.5),
                             np.nanquantile(pi_hat, 0.75), np.nanmax(pi_hat)))
-                print(f'estimating equation (gamma={round(gamma_hat[0],3)}):')
-                print(self.estEq((gamma_hat[0], )))
+                print(f'estimating equation (psi={round(psi_hat[0],3)}):')
+                print(self.estEq((psi_hat[0], )))
             _ = gc.collect()
-            return gamma_hat
+            return psi_hat
         else:
             # generalized method of moments
             self.expg_func = self._create_expg_func(u=u, y=y, delta=delta)
@@ -356,79 +356,79 @@ class ExpoTiltingClassifierMNAR():
                                                       aggregate=None,
                                                       expg_func=self.expg_func)
 
-            def step1_func(gamma):
-                M_mean = np.mean(self.estEq_full(gamma), axis=0)
+            def step1_func(psi):
+                M_mean = np.mean(self.estEq_full(psi), axis=0)
                 # _ = gc.collect()
                 return np.matmul(M_mean.T, M_mean)
 
-            gamma_hat_list = []
+            psi_hat_list = []
             estEq_sq_list = []
             # try several initial values to avoid local optimum
             reps = 5
-            if not gamma_init:
-                gamma_init_list = np.random.normal(size=(reps, y_dim))
+            if not psi_init:
+                psi_init_list = np.random.normal(size=(reps, y_dim))
             else:
-                gamma_init_list = np.tile(np.array(gamma_init).reshape(
+                psi_init_list = np.tile(np.array(psi_init).reshape(
                     (1, y_dim)),
                                           reps=(reps, 1))
             for i in range(reps):
-                gamma_init = gamma_init_list[i].reshape((y_dim, ))
+                psi_init = psi_init_list[i].reshape((y_dim, ))
                 optresult1 = minimize(
                     fun=step1_func,
-                    x0=gamma_init,
+                    x0=psi_init,
                     bounds=bounds,
                     method='Nelder-Mead' # 'L-BFGS-B'
                 )
-                gamma_hat_step1 = optresult1.x
-                gamma_hat_list.append(gamma_hat_step1)
-                estEq_sq_list.append(step1_func(gamma_hat_step1))
+                psi_hat_step1 = optresult1.x
+                psi_hat_list.append(psi_hat_step1)
+                estEq_sq_list.append(step1_func(psi_hat_step1))
                 if verbose:
-                    print(f'step1, gamma_init: {gamma_init}')
+                    print(f'step1, psi_init: {psi_init}')
                     print(
-                        f'step1, estEq(gamma_init): {step1_func(gamma_init)}')
+                        f'step1, estEq(psi_init): {step1_func(psi_init)}')
                     print(
-                        f'step1, estEq({gamma_hat_step1}): {step1_func(gamma_hat_step1)}'
+                        f'step1, estEq({psi_hat_step1}): {step1_func(psi_hat_step1)}'
                     )
-            gamma_hat_step1 = gamma_hat_list[np.argmin(estEq_sq_list)]
-            M = self.estEq_full(gamma_hat_step1)
+            psi_hat_step1 = psi_hat_list[np.argmin(estEq_sq_list)]
+            M = self.estEq_full(psi_hat_step1)
             W_inv_hat = 1 / M.shape[0] * np.matmul(M.T, M)
             W_hat = np.linalg.inv(W_inv_hat)
 
-            def step2_func(gamma):
+            def step2_func(psi):
                 Q = reduce(np.matmul, [
-                    np.mean(self.estEq_full(gamma), axis=0).reshape(1, -1),
+                    np.mean(self.estEq_full(psi), axis=0).reshape(1, -1),
                     W_hat,
-                    np.mean(self.estEq_full(gamma), axis=0).reshape(-1, 1)
+                    np.mean(self.estEq_full(psi), axis=0).reshape(-1, 1)
                 ])
                 _ = gc.collect()
                 return Q.squeeze()
 
-            gamma_init = gamma_hat_step1
+            psi_init = psi_hat_step1
             optresult2 = minimize(fun=step2_func,
-                                  x0=gamma_init,
+                                  x0=psi_init,
                                   bounds=bounds,
                                   method='L-BFGS-B')
-            gamma_hat_step2 = optresult2.x
+            psi_hat_step2 = optresult2.x
             if verbose:
-                print(f'step2, gamma_init: {gamma_init}')
-                print(f'step2, estEq(gamma_init): {step2_func(gamma_init)}')
+                print(f'step2, psi_init: {psi_init}')
+                print(f'step2, estEq(psi_init): {step2_func(psi_init)}')
                 print(
-                    f'step2, estEq({gamma_hat_step2}): {step2_func(gamma_hat_step2)}'
+                    f'step2, estEq({psi_hat_step2}): {step2_func(psi_hat_step2)}'
                 )
-            # expg_hat = self.expg_func(u=u, gamma=-0.5, bandwidth=bandwidth)
-            # gamma_y = np.clip(np.dot(y, (-0.5, )), -709.78, 709.78)  # (k,)
-            # logit = np.log(expg_hat) + gamma_y
-            # pi_hat = 1 / (1 + expg_hat * np.exp(gamma_y))
+            # expg_hat = self.expg_func(u=u, psi=-0.5, bandwidth=bandwidth)
+            # psi_y = np.clip(np.dot(y, (-0.5, )), -709.78, 709.78)  # (k,)
+            # logit = np.log(expg_hat) + psi_y
+            # pi_hat = 1 / (1 + expg_hat * np.exp(psi_y))
             expg_hat = self.expg_func(u=u,
-                                      gamma=gamma_hat_step2,
+                                      psi=psi_hat_step2,
                                       bandwidth=bandwidth)
-            gamma_y = np.clip(np.dot(y, gamma_hat_step2), -709.78,
+            psi_y = np.clip(np.dot(y, psi_hat_step2), -709.78,
                               709.78)  # (k,)
-            logit = np.log(expg_hat) + gamma_y
-            pi_hat = 1 / (1 + expg_hat * np.exp(gamma_y))
+            logit = np.log(expg_hat) + psi_y
+            pi_hat = 1 / (1 + expg_hat * np.exp(psi_y))
             if verbose:
                 print(
-                    f'expg_hat (gamma={round(gamma_hat_step2[0],3)})',
+                    f'expg_hat (psi={round(psi_hat_step2[0],3)})',
                     '0.0/0.25/0.5/0.75/1.0 quantile:{0:.2f}/{1:.2f}/{2:.2f}/{3:.2f}/{4:.2f}'
                     .format(np.nanmin(expg_hat),
                             np.nanquantile(expg_hat, 0.25),
@@ -436,40 +436,40 @@ class ExpoTiltingClassifierMNAR():
                             np.nanquantile(expg_hat,
                                            0.75), np.nanmax(expg_hat)))
                 print(
-                    f'logit (gamma={round(gamma_hat_step2[0],3)})',
+                    f'logit (psi={round(psi_hat_step2[0],3)})',
                     '0.0/0.25/0.5/0.75/1.0 quantile:{0:.2f}/{1:.2f}/{2:.2f}/{3:.2f}/{4:.2f}'
                     .format(np.nanmin(logit), np.nanquantile(logit, 0.25),
                             np.nanquantile(logit, 0.5),
                             np.nanquantile(logit, 0.75), np.nanmax(logit)))
                 print(
-                    f'pi_hat (gamma={round(gamma_hat_step2[0],3)})',
+                    f'pi_hat (psi={round(psi_hat_step2[0],3)})',
                     '0.0/0.25/0.5/0.75/1.0 quantile:{0:.2f}/{1:.2f}/{2:.2f}/{3:.2f}/{4:.2f}'
                     .format(np.nanmin(pi_hat), np.nanquantile(pi_hat, 0.25),
                             np.nanquantile(pi_hat, 0.5),
                             np.nanquantile(pi_hat, 0.75), np.nanmax(pi_hat)))
                 print(
-                    f'estimating equation (gamma={round(gamma_hat_step2[0],3)}):'
+                    f'estimating equation (psi={round(psi_hat_step2[0],3)}):'
                 )
-                print(np.mean(self.estEq_full((gamma_hat_step2[0], )), axis=0))
+                print(np.mean(self.estEq_full((psi_hat_step2[0], )), axis=0))
 
                 #######################
                 # # for debug purpose
-                # gamma_grid = np.linspace(start=-10, stop=10, num=50)
+                # psi_grid = np.linspace(start=-10, stop=10, num=50)
                 # step2_func_grid = []
-                # for g in gamma_grid:
+                # for g in psi_grid:
                 #     step2_func_grid.append(step2_func((g,)))
-                # plt.plot(gamma_grid, np.array(step2_func_grid))
-                # plt.axvline(gamma_hat_step2[0], color='red')
-                # plt.xlabel('gamma')
+                # plt.plot(psi_grid, np.array(step2_func_grid))
+                # plt.axvline(psi_hat_step2[0], color='red')
+                # plt.xlabel('psi')
                 # plt.ylabel('objective func')
-                # # plt.title(f'gamma hat={round(gamma_hat[0],3)}')
+                # # plt.title(f'psi hat={round(psi_hat[0],3)}')
                 # plt.tight_layout()
-                # plt.savefig(os.path.expanduser(f'~/mnar_obj_func_gamma_{round(gamma_hat_step2[0],3)}.png'))
+                # plt.savefig(os.path.expanduser(f'~/mnar_obj_func_psi_{round(psi_hat_step2[0],3)}.png'))
                 # plt.close()
                 #######################
 
             _ = gc.collect()
-            return gamma_hat_step2
+            return psi_hat_step2
 
     def fit(self,
             L,
@@ -479,11 +479,11 @@ class ExpoTiltingClassifierMNAR():
             delta,
             bandwidth=None,
             seed=None,
-            gamma_init=None,
+            psi_init=None,
             bounds=None,
             verbose=True,
             bandwidth_factor=1.5):
-        """A wrapper function of estimate_gamma()
+        """A wrapper function of estimate_psi()
         
         Args:
             L (int): number of bins to discretize the instrument variable
@@ -493,7 +493,7 @@ class ExpoTiltingClassifierMNAR():
             delta (np.ndarray): dimension (k,1)
             bandwidth (np.ndarray): dimension (k,u_dim,u_dim)
             seed (int): random seed to general initial values
-            gamma_init (int or np.ndarray): initial value of gamma, only used in simulation
+            psi_init (int or np.ndarray): initial value of psi, only used in simulation
             bounds (tuple): bounds for value search
             bandwidth_factor (float): the constant used in bandwidth calculation
             verbose (bool): If True, print intermediate results
@@ -538,14 +538,14 @@ class ExpoTiltingClassifierMNAR():
                             u[z == i], rowvar=False) * np.square(
                                 np.sum(z == i)**(-1 / 3))
             # print(self.bandwidth_dict)
-        self.gamma_hat = self.estimate_gamma(L=L,
+        self.psi_hat = self.estimate_psi(L=L,
                                              z=z,
                                              u=u,
                                              y=y,
                                              delta=delta,
                                              bandwidth=bandwidth,
                                              seed=seed,
-                                             gamma_init=gamma_init,
+                                             psi_init=psi_init,
                                              bounds=bounds,
                                              verbose=verbose)
 
@@ -573,21 +573,21 @@ class ExpoTiltingClassifierMNAR():
             assert hasattr(self, 'bandwidth_dict')
             bandwidth[z == i] = self.bandwidth_dict[i]
         expg_hat = self.expg_func(u=u,
-                                  gamma=self.gamma_hat,
+                                  psi=self.psi_hat,
                                   bandwidth=bandwidth)  # (k,)
-        gamma_y = np.clip(np.dot(y, self.gamma_hat), -709.78, 709.78)  # (k,)
-        pi_est = 1 / (1 + expg_hat * np.exp(gamma_y))
+        psi_y = np.clip(np.dot(y, self.psi_hat), -709.78, 709.78)  # (k,)
+        pi_est = 1 / (1 + expg_hat * np.exp(psi_y))
         return pi_est
 
     def save(self, filename):
         with open(filename, 'wb') as f:
-            pickle.dump({'L': self.L, 'gamma_hat': self.gamma_hat}, f)
+            pickle.dump({'L': self.L, 'psi_hat': self.psi_hat}, f)
 
     def load(self, filename):
         with open(filename, 'wb') as f:
             log_dict = pickle.load(f)
             self.L = log_dict.get('L', None)
-            self.gamma_hat = log_dict.get('gamma_hat', None)
+            self.psi_hat = log_dict.get('psi_hat', None)
 
 
 class SimEnv(gym.Env):

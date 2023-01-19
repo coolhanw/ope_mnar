@@ -75,7 +75,6 @@ class SimulationBase(object):
         self.masked_buffer = {} # masked data buffer, only observed data are included
         self.full_buffer = {}
         self.misc_buffer = {}  # hold any other information
-        self.concat_trajs = None
 
     def sample_initial_states(self, size, from_data=False, seed=None):
         assert self.env is not None
@@ -409,13 +408,13 @@ class SimulationBase(object):
             count = 0
             incomplete_cnt = 0
             if total_N is None:
-                self.concat_trajs = self.gen_batch_trajs(policy=policy,
+                concat_trajs = self.gen_batch_trajs(policy=policy,
                                                          burn_in=burn_in,
                                                          S_inits=S_inits,
                                                          A_inits=None,
                                                          seed=seed,
                                                          evaluation=False)
-                S_traj, A_traj, reward_traj, T, survival_prob_traj, dropout_next_traj, dropout_prob_traj, S_traj_mask = self.concat_trajs
+                S_traj, A_traj, reward_traj, T, survival_prob_traj, dropout_next_traj, dropout_prob_traj, S_traj_mask = concat_trajs
                 for i in range(len(S_traj)):
                     observed_state_index = np.where(S_traj_mask[i] == 1)[0]
                     observed_index = observed_state_index[
@@ -443,13 +442,13 @@ class SimulationBase(object):
                 i = 0
                 incomplete_cnt = 0
                 while count < total_N:
-                    self.concat_trajs = self.gen_batch_trajs(policy=policy,
+                    concat_trajs = self.gen_batch_trajs(policy=policy,
                                                              burn_in=burn_in,
                                                              S_inits=None,
                                                              A_inits=None,
                                                              seed=seed,
                                                              evaluation=False)
-                    S_traj, A_traj, reward_traj, T, survival_prob_traj, dropout_next_traj, dropout_prob_traj, S_traj_mask = self.concat_trajs
+                    S_traj, A_traj, reward_traj, T, survival_prob_traj, dropout_next_traj, dropout_prob_traj, S_traj_mask = concat_trajs
                     if count + np.sum(T) <= total_N:
                         sub_n = len(S_traj)
                     else:
@@ -1045,7 +1044,7 @@ class SimulationBase(object):
                             include_reward=True,
                             instrument_var_index=None,
                             mnar_y_transform=None,
-                            gamma_init=None,
+                            psi_init=None,
                             bandwidth_factor=1.5,
                             verbose=True,
                             **kwargs):
@@ -1065,7 +1064,7 @@ class SimulationBase(object):
             include_reward (bool): if True, include reward as feature in dropuot model
             instrument_var_index (int): index of the instrument variable
             mnar_y_transform (callable): input next_obs and reward, output Y term for the mnar dropout model 
-            gamma_init (float): initial value for gamma in MNAR estimation
+            psi_init (float): initial value for psi in MNAR estimation
             bandwidth_factor (float): the constant used in bandwidth calculation
             kwargs (dict): passed to model
         """
@@ -1076,10 +1075,10 @@ class SimulationBase(object):
         self._mnar_y_transform = mnar_y_transform
         self._instrument_var_index = instrument_var_index
         self._scale_obs = scale_obs
-        obs_list, next_obs_list, action_list, reward_list = [], [], [], []
+        states_list, next_states_list, actions_list, rewards_list = [], [], [], []
         dropout_next_list, dropout_prob_list = [], []
-        # done_list = []
         mnar_nextobs_list, mnar_noninstrument_list, mnar_instrument_list = [], [], []
+        
         self.fitted_dropout_model = {}
         if export_dir is not None and pkl_filename is not None:
             self.dropout_model_filename = os.path.join(export_dir,
@@ -1090,116 +1089,114 @@ class SimulationBase(object):
         keys = self.masked_buffer.keys()
         if subsample_index is not None:
             keys = subsample_index
-        for i in keys:
-            S_traj, A_traj, R_traj, _, _, don_traj, dop_traj = self.masked_buffer[i][:7]
-            if self.misc_buffer:
-                mnar_nextobs_traj = self.misc_buffer[i].get(
-                    'mnar_nextobs_arr', None)
-                mnar_noninstrument_traj = self.misc_buffer[i].get(
-                    'mnar_noninstrument_arr', None)
-                mnar_instrument_traj = self.misc_buffer[i].get(
-                    'mnar_instrument_arr', None)
-            else:
+        if missing_mechanism == 'mar':
+            for i in keys:
+                S_traj, A_traj, R_traj, _, _, don_traj, dop_traj = self.masked_buffer[i][:7]
+                traj_len = A_traj.shape[0]
+                states = S_traj[self.dropout_obs_count_thres:traj_len]
+                actions = A_traj[self.dropout_obs_count_thres:traj_len].reshape(-1, 1) # (traj_len,1)
+                # use previous step of reward
+                rewards = np.append(0, R_traj)[self.dropout_obs_count_thres:traj_len].reshape(
+                                  -1, 1) # (traj_len,1)
+                states_list.append(states)
+                actions_list.append(actions)
+                rewards_list.append(rewards)
+                don = don_traj[self.dropout_obs_count_thres:traj_len].reshape(-1, 1)
+                dropout_next_list.append(don)
+                if dop_traj is not None:
+                    dop = dop_traj[self.dropout_obs_count_thres:traj_len].reshape(-1, 1)
+                    dropout_prob_list.append(dop)
+        elif missing_mechanism == 'mnar':
+            for i in keys:
+                S_traj, A_traj, R_traj, _, _, don_traj, dop_traj = self.masked_buffer[i][:7]
+                traj_len = A_traj.shape[0]
+                if sum(don_traj) == 0: # no dropout
+                    traj_len -= 1
+                    if traj_len <= self.dropout_obs_count_thres:
+                        continue # ?
+                states = S_traj[self.dropout_obs_count_thres:traj_len]
+                actions = A_traj[self.dropout_obs_count_thres:traj_len].reshape(-1, 1) # (traj_len,1)
+                # use current reward
+                rewards = R_traj[self.dropout_obs_count_thres:traj_len].reshape(-1, 1) # (traj_len,1)
+
+                if len(S_traj) == traj_len:
+                    next_states = np.vstack([
+                            S_traj[self.dropout_obs_count_thres+1:traj_len+1],
+                            [[np.nan] * self.state_dim]
+                        ])
+                else:
+                    next_states = S_traj[self.dropout_obs_count_thres+1:traj_len+1]
+
+                states_list.append(states)
+                actions_list.append(actions)
+                next_states_list.append(next_states)
+                rewards_list.append(rewards)
+                don = don_traj[self.dropout_obs_count_thres:traj_len].reshape(-1, 1)
+                dropout_next_list.append(don)
+                if dop_traj is not None:
+                    dop = dop_traj[self.dropout_obs_count_thres:traj_len].reshape(-1, 1)
+                    dropout_prob_list.append(dop)
+
                 mnar_nextobs_traj = None
                 mnar_noninstrument_traj = None
-                mnar_instrument_traj = None
-            if missing_mechanism == 'mar':
-                T = A_traj.shape[0]
-                obs_list.append(S_traj[self.dropout_obs_count_thres:T])
-                reward_list.append(
-                    np.append(0,
-                              R_traj)[self.dropout_obs_count_thres:T].reshape(
-                                  -1, 1))  # R_{t-1}
-            elif missing_mechanism == 'mnar':
-                T = A_traj.shape[0]
-                
-                if sum(don_traj) == 0: # no dropout
-                    T -= 1
-                    if T <= self.dropout_obs_count_thres:
-                        continue
-
-                obs_list.append(S_traj[self.dropout_obs_count_thres:T])
+                mnar_instrument_traj = None                
+                if self.misc_buffer:
+                    mnar_nextobs_traj = self.misc_buffer[i].get(
+                        'mnar_nextobs_arr', None)
+                    mnar_noninstrument_traj = self.misc_buffer[i].get(
+                        'mnar_noninstrument_arr', None)
+                    mnar_instrument_traj = self.misc_buffer[i].get(
+                        'mnar_instrument_arr', None)
                 if mnar_nextobs_traj is not None:
                     mnar_nextobs_list.append(
-                        mnar_nextobs_traj[self.dropout_obs_count_thres:T])
+                        mnar_nextobs_traj[self.dropout_obs_count_thres:traj_len])
                 if mnar_noninstrument_traj is not None:
                     mnar_noninstrument_list.append(
                         mnar_noninstrument_traj[self.
-                                                dropout_obs_count_thres:T])
+                                                dropout_obs_count_thres:traj_len])
                 if mnar_instrument_traj is not None:
                     mnar_instrument_list.append(
-                        mnar_instrument_traj[self.dropout_obs_count_thres:T])
-                if len(S_traj) == T:
-                    next_obs_list.append(
-                        np.vstack([
-                            S_traj[self.dropout_obs_count_thres + 1:],
-                            [[np.nan] * self.state_dim]
-                        ]))
-                else:
-                    next_obs_list.append(S_traj[self.dropout_obs_count_thres+1:T+1])
-                reward_list.append(
-                    R_traj[self.dropout_obs_count_thres:T].reshape(-1,
-                                                                   1))  # R_{t}
-            else:
-                T = self.max_T
-            
-            action_list.append(A_traj[self.dropout_obs_count_thres:T].reshape(
-                -1, 1))
-            dropout_next_list.append(
-                don_traj[self.dropout_obs_count_thres:T].reshape(-1, 1))
-            if dop_traj is not None:
-                dropout_prob_list.append(
-                    dop_traj[self.dropout_obs_count_thres:T].reshape(-1, 1))
+                        mnar_instrument_traj[self.dropout_obs_count_thres:traj_len])
 
-            # dones = np.zeros(shape=T - self.dropout_obs_count_thres)
-            # if T == self.max_T:
-            #     dones[-1] = 1
-            # done_list.append(dones.reshape(-1, 1))
-        unscaled_obs = obs = np.vstack(obs_list)  # (total_T, S_dim)
-        if next_obs_list:
-            next_obs = np.vstack(next_obs_list)  # (total_T, S_dim)
+        unscaled_states = states = np.vstack(states_list)  # (total_T, S_dim)
+        unscaled_next_states = next_states = np.vstack(next_states_list) if next_states_list else None # (total_T, S_dim)
+        actions = np.vstack(actions_list).squeeze()  # (total_T,)
+        rewards = np.vstack(rewards_list).squeeze()  # (total_T,)
+        dropout_next = np.vstack(dropout_next_list).squeeze()  # (total_T,)
+        if dropout_prob_list:
+            dropout_prob = np.vstack(dropout_prob_list).squeeze() # (total_T,)
         else:
-            next_obs = None
-        # we scale these arrays separately
-        mnar_nextobs_arr = np.vstack(
-            mnar_nextobs_list) if mnar_nextobs_list else None
-        mnar_noninstrument_arr = np.vstack(
-            mnar_noninstrument_list) if mnar_noninstrument_list else None
-
-        mnar_instrument_arr = np.concatenate(
-            mnar_instrument_list) if mnar_instrument_list else None
+            dropout_prob = None
         if scale_obs:
             if not hasattr(self.scaler, 'data_min_') or not hasattr(
                     self.scaler, 'data_max_') or np.min(
                         self.scaler.data_min_) == -np.inf or np.max(
                             self.scaler.data_max_) == np.inf:
-                if next_obs is not None:
-                    self.scaler.fit(np.vstack([obs, next_obs]))
+                if next_states is not None:
+                    self.scaler.fit(np.vstack([states, next_states]))
                 else:
-                    self.scaler.fit(obs)
-            obs = self.scaler.transform(obs)
-            if next_obs_list:
-                next_obs = self.scaler.transform(next_obs)
+                    self.scaler.fit(states)
+            states = self.scaler.transform(states)
+            if next_states_list:
+                next_states = self.scaler.transform(next_states)
             self.fitted_dropout_model['scaler'] = self.scaler
         else:
             self.fitted_dropout_model['scaler'] = iden()
-        actions = np.vstack(action_list).squeeze()  # (total_T, )
-        rewards = np.vstack(reward_list).squeeze()  # (total_T, )
-        dropout_next = np.vstack(dropout_next_list).squeeze()  # (total_T, )
-        # dones = np.vstack(done_list).squeeze()  # (total_T, )
-        if dropout_prob_list:
-            dropout_prob = np.vstack(
-                dropout_prob_list).squeeze()  # (total_T, )
-        else:
-            dropout_prob = None
+
+        mnar_nextobs_arr = np.vstack(
+            mnar_nextobs_list) if mnar_nextobs_list else None
+        mnar_noninstrument_arr = np.vstack(
+            mnar_noninstrument_list) if mnar_noninstrument_list else None
+        mnar_instrument_arr = np.concatenate(
+            mnar_instrument_list) if mnar_instrument_list else None
 
         if missing_mechanism == 'mar':
             if include_reward:
-                X, y = np.hstack([obs, rewards.reshape(-1, 1)]), dropout_next
+                X, y = np.hstack([states, rewards.reshape(-1, 1)]), dropout_next
             else:
-                X, y = obs, dropout_next
+                X, y = states, dropout_next
             data = {}
-            obs_train_list = [] 
+            states_train_list = [] 
             probT_train_list = []
             action_train_list = []
             for a in range(self.num_actions):
@@ -1208,10 +1205,10 @@ class SimulationBase(object):
                 if dropout_prob is not None:
                     probT_a = dropout_prob[actions == a]
                     if train_ratio < 1:
-                        X_train, X_test, y_train, y_test, obs_train, obs_test, probT_train, probT_test = train_test_split(
+                        X_train, X_test, y_train, y_test, states_train, states_test, probT_train, probT_test = train_test_split(
                             X_a,
                             y_a,
-                            obs[actions == a],
+                            states[actions == a],
                             probT_a,
                             test_size=1 - train_ratio,
                             random_state=seed
@@ -1220,20 +1217,20 @@ class SimulationBase(object):
                         # use all data for training
                         X_train = X_test = X_a
                         y_train = y_test = y_a
-                        obs_train = obs_test = obs[actions == a]
+                        states_train = states_test = states[actions == a]
                         probT_train = probT_test = probT_a
-                    obs_train_list.append(obs_train)
+                    states_train_list.append(states_train)
                     probT_train_list.append(probT_train)
                 else:
                     if train_ratio < 1:
-                        X_train, X_test, y_train, y_test, obs_train, obs_test = train_test_split(
-                            X_a, y_a, obs[actions == a], test_size=1 - train_ratio, random_state=seed)
+                        X_train, X_test, y_train, y_test, states_train, states_test = train_test_split(
+                            X_a, y_a, states[actions == a], test_size=1 - train_ratio, random_state=seed)
                     else:
                         X_train = X_test = X_a
                         y_train = y_test = y_a
-                        obs_train = obs_test = obs[actions == a]
+                        states_train = states_test = states[actions == a]
                     probT_train, probT_test = None, None
-                    obs_train_list.append(obs_train)
+                    states_train_list.append(states_train)
                 data[a] = {
                     'X_train': X_train,
                     'X_test': X_test,
@@ -1243,7 +1240,7 @@ class SimulationBase(object):
                     'prob_test': probT_test
                 }
                 action_train_list.append([a] * len(X_train))
-            obs_train = np.vstack(obs_train_list)
+            states_train = np.vstack(states_train_list)
             action_train = np.concatenate(action_train_list)
             if probT_train_list:
                 probT_train = np.concatenate(probT_train_list)
@@ -1340,58 +1337,44 @@ class SimulationBase(object):
                             filename=self.dropout_model_filename,
                             compress=3)
         else:
+            # specify y_arr
             if include_reward:
                 print('use the reward as outcome')
-                # use reward as outcome
-                y_arr = rewards
-                y_dim = 1
+                y_arr = rewards # use reward as outcome
             elif mnar_nextobs_arr is None:
                 if mnar_y_transform is not None:
-                    orig_next_obs = self.fitted_dropout_model[
-                        'scaler'].inverse_transform(
-                            next_obs)  # transform to its original scale
                     y_arr = mnar_y_transform(
-                        np.hstack([orig_next_obs,
-                                   rewards.reshape(-1, 1)]))
-                    # print(f'y_arr:{y_arr}')
-                # elif include_reward:
-                #     y_arr = rewards
+                        np.hstack([unscaled_next_states, rewards.reshape(-1, 1)]))
                 else:
-                    y_arr = next_obs
-                if len(y_arr.shape) == 1 or (len(y_arr.shape) == 2
-                                             and y_arr.shape[1] == 1):
-                    y_dim = 1
-                else:
-                    y_dim = y_arr.shape[1]
-                y_arr = y_arr.reshape(-1, y_dim)  # (n,y_dim)
+                    y_arr = next_states # already scaled if set scale_obs=True
             else:
                 y_arr = mnar_nextobs_arr
-                if len(y_arr.shape) == 1:
-                    y_dim = 1
-                else:
-                    y_dim = y_arr.shape[1]
-                y_arr = y_arr.reshape(-1, y_dim)
-            print(f'y_dim: {y_dim}')
+            if len(y_arr.shape) == 1 or y_arr.shape[1] == 1:
+                y_dim = 1
+            else:
+                y_dim = y_arr.shape[1]
+            y_arr = y_arr.reshape(-1, y_dim) # (n,y_dim)
             if self._scale_obs:
                 self._y_arr_scaler = MinMaxScaler()
                 self._y_arr_scaler.fit(y_arr)
                 y_arr = self._y_arr_scaler.transform(y_arr)
+            # specify u_arr
             if mnar_noninstrument_arr is None:
                 if not isinstance(instrument_var_index,
                                   np.ndarray) and not hasattr(
                                       instrument_var_index, '__iter__'):
                     non_instrument_index = [
-                        i for i in range(obs.shape[1])
+                        i for i in range(states.shape[1])
                         if i != instrument_var_index
                     ]
                 else:
                     non_instrument_index = [
-                        i for i in range(obs.shape[1])
+                        i for i in range(states.shape[1])
                         if i not in set(instrument_var_index)
                     ]
                 u_dim = len(non_instrument_index)
-                u_arr = obs[:,
-                            non_instrument_index].reshape(len(obs),
+                u_arr = states[:,
+                            non_instrument_index].reshape(len(states),
                                                           u_dim)  # (n, u_dim)
             else:
                 if len(mnar_noninstrument_arr.shape) == 1:
@@ -1403,12 +1386,12 @@ class SimulationBase(object):
                 self._u_arr_scaler = MinMaxScaler()
                 self._u_arr_scaler.fit(u_arr)
                 u_arr = self._u_arr_scaler.transform(u_arr)
+            # specify z_arr
             if mnar_instrument_arr is None:
                 assert instrument_var_index is not None, 'please provide the name of the instrument variable, otherwise there is identifibility issue.'
-                z_arr = obs[:, instrument_var_index]  # (n,)
+                z_arr = states[:, instrument_var_index]  # (n,)
                 # discretize Z
-                L = y_dim + 3  # try y_dim + 1, y_dim + 2, or y_dim + 3
-                print(f'L: {L}')
+                L = y_dim + 3
                 z_min, z_max = z_arr.min(), z_arr.max()
                 self.instrument_disc_bins = np.quantile(
                     a=z_arr, q=np.linspace(0, 1, L + 1))  # divide by quantile
@@ -1421,22 +1404,20 @@ class SimulationBase(object):
                 self.instrument_disc_bins = bins_nonoverlap
                 L = len(self.instrument_disc_bins) - 1
                 assert L >= y_dim + 1
+                print(f'discretize Z into L={L} bins')
                 # handle the boundary
                 self.instrument_disc_bins[0] -= 0.1
                 self.instrument_disc_bins[-1] += 0.1
-                if verbose:
-                    print(f'bins:{self.instrument_disc_bins}')
                 z_arr = np.digitize(z_arr, bins=self.instrument_disc_bins)
                 z_arr_count = collections.Counter(z_arr)
-                print(f'Counter(z_arr): {z_arr_count}')
                 # make sure every level of Z has samples in it
                 for i in range(1, L + 1):
                     assert z_arr_count[i] != 0
             else:
                 z_arr = mnar_instrument_arr.reshape(
-                    -1)  # assume z is already discretized
+                    -1)  # assume Z is already discretized
                 L = len(np.unique(z_arr))
-                print(f'L:{L}')
+                print(f'discretize Z into L={L} bins')
                 # discretized Z start from 1 instead of 0
                 if min(z_arr) <= 0:
                     z_arr -= min(z_arr) - 1
@@ -1446,76 +1427,80 @@ class SimulationBase(object):
                 logitT_arr = np.log(1 / probT_arr - 1)
             else:
                 probT_arr, logitT_arr = None, None
-            # delta_arr = 1 - np.logical_or(dropout_next, dones) # indicator of observed sample
-            # done=True does not necessarily indicate dropout
             delta_arr = 1 - dropout_next
-            print('count of dropout indicator:', sum(delta_arr == 0))
 
             if verbose:
+                print('count of dropout indicator:', sum(delta_arr == 0))
                 print(f'observed proportion: {np.mean(delta_arr)}')
 
             delta_train = None
             while delta_train is None or np.mean(delta_train) == 1:
                 if probT_arr is not None:
                     if train_ratio < 1:
-                        u_train, u_test, z_train, z_test, obs_train, obs_test, y_train, y_test, delta_train, delta_test, probT_train, probT_test = train_test_split(
+                        u_train, u_test, z_train, z_test, states_train, states_test, y_train, y_test, delta_train, delta_test, probT_train, probT_test = train_test_split(
                             u_arr,
                             z_arr,
-                            obs,
+                            states,
                             y_arr,
                             delta_arr,
                             probT_arr,
                             test_size=1 - train_ratio,
                             random_state=seed)
                     else:
+                        # use all data for training
                         u_train = u_test = u_arr
                         z_train = z_test = z_arr
-                        obs_train = obs_test = obs
+                        states_train = states_test = states
                         y_train = y_test = y_arr
                         delta_train = delta_test = delta_arr
                         probT_train = probT_test = probT_arr
                 else:
                     if train_ratio < 1:
-                        u_train, u_test, z_train, z_test, obs_train, obs_test, y_train, y_test, delta_train, delta_test = train_test_split(
+                        u_train, u_test, z_train, z_test, states_train, states_test, y_train, y_test, delta_train, delta_test = train_test_split(
                             u_arr,
                             z_arr,
-                            obs,
+                            states,
                             y_arr,
                             delta_arr,
                             test_size=1 - train_ratio,
                             random_state=seed)
                     else:
+                        # use all data for training
                         u_train = u_test = u_arr
                         z_train = z_test = z_arr
-                        obs_train = obs_test = obs
+                        states_train = states_test = states
                         y_train = y_test = y_arr
                         delta_train = delta_test = delta_arr
+                    
                     probT_train, probT_test = None, None
+            
             # train model
             mnar_clf = ExpoTiltingClassifierMNAR()
             if verbose:
                 print(f'observed proportion (train): {np.mean(delta_train)}')
             fit_start = time.time()
             bounds = None
-
-            if gamma_init is not None:
-                bounds = ((gamma_init - 1.5, gamma_init + 1.5), ) # can set custom search range
-
+            if psi_init is not None:
+                bounds = ((psi_init - 1.5, psi_init + 1.5), ) # can set custom search range
             mnar_clf.fit(L=L,
                          z=z_train,
                          u=u_train,
                          y=y_train,
                          delta=delta_train,
                          seed=seed,
-                         gamma_init=gamma_init,
+                         psi_init=psi_init,
                          bounds=bounds,
                          verbose=verbose,
                          bandwidth_factor=bandwidth_factor)
-            self.mnar_gamma = mnar_clf.gamma_hat
+            self.mnar_psi = mnar_clf.psi_hat
             if verbose:
                 print(
                     f'fitting mnar-ipw model takes {time.time()-fit_start} secs.'
                 )
+            self.fitted_dropout_model['model'] = mnar_clf
+            # save the model
+            if self.dropout_model_filename is not None:
+                mnar_clf.save(self.dropout_model_filename)
 
             # the following part is only used for simulation
             if True:
@@ -1523,7 +1508,7 @@ class SimulationBase(object):
                     mnar_clf.predict_proba(u=u_test, z=z_test, y=y_test)
 
                 if verbose:
-                    print(f'gamma_hat: {mnar_clf.gamma_hat}')
+                    print(f'psi_hat: {mnar_clf.psi_hat}')
                     print(
                         f'max_prob_pred_test: {prob_pred_test[delta_test==1].max()}'
                     )
@@ -1547,16 +1532,11 @@ class SimulationBase(object):
                         print(f'MSE on test set: {test_mse}')
                     self._dropout_prob_mse = test_mse
 
-            self.fitted_dropout_model['model'] = mnar_clf
-            # save the model
-            if self.dropout_model_filename is not None:
-                mnar_clf.save(self.dropout_model_filename)
-
         # add some additional tracking
         if verbose and probT_train is not None:
             prob_pred_df = pd.DataFrame({
-                'X1': obs_train[:, 0],
-                'X2': obs_train[:, 1],
+                'X1': states_train[:, 0],
+                'X2': states_train[:, 1],
                 'dropout_prob': probT_train
             })
             if missing_mechanism == 'mnar':
@@ -1609,46 +1589,6 @@ class SimulationBase(object):
                         np.nanquantile(logit_pred_train, 0.5),
                         np.nanquantile(logit_pred_train, 0.75),
                         np.nanmax(logit_pred_train)))
-            if False:
-                fig, ax = plt.subplots(nrows=2,
-                                    ncols=2,
-                                    figsize=(5 * 2, 4 * 2))
-                sns.scatterplot(x='X1',
-                                y='X2',
-                                hue='dropout_prob',
-                                data=prob_pred_df,
-                                ax=ax[0, 0],
-                                s=50)
-                ax[0, 0].set_title(f'true dropout prob')
-                ax[0, 0].legend(bbox_to_anchor=(1.4, 1), title="prob")
-                sns.scatterplot(x='X1',
-                                y='X2',
-                                hue='dropout_prob_est',
-                                data=prob_pred_df,
-                                ax=ax[0, 1],
-                                s=50)
-                if missing_mechanism == 'mnar':
-                    ax[0, 1].set_title(
-                        f'est dropout prob, L={L}, gamma_hat={round(mnar_clf.gamma_hat[0],2)}, MSE={round(train_mse,3)}'
-                    )
-                else:
-                    ax[0, 1].set_title(f'est dropout prob, MSE={round(train_mse,3)}')                    
-                ax[0, 1].legend(bbox_to_anchor=(1.4, 1), title="prob")
-                sns.histplot(data=prob_pred_df,
-                            x='dropout_prob',
-                            bins=25,
-                            ax=ax[1, 0])
-                sns.histplot(data=prob_pred_df,
-                            x='dropout_prob_est',
-                            bins=25,
-                            ax=ax[1, 1])
-                plt.tight_layout()
-                if missing_mechanism == 'mnar':
-                    figure_name = f"prob_est_dist_missing{round(self.dropout_rate,1)}_instrument{L}_gamma{round(mnar_clf.gamma_hat[0],2)}.png"
-                else:
-                    figure_name = f"prob_est_dist_missing{round(self.dropout_rate,1)}_mar.png"
-                plt.savefig(os.path.join(export_dir, figure_name))
-                plt.close()
 
     def estimate_missing_prob(self,
                       missing_mechanism=None,
@@ -1661,118 +1601,130 @@ class SimulationBase(object):
         keys = self.masked_buffer.keys()
         if subsample_index is not None:
             keys = subsample_index
-        dropout_prob_concat = []
-        surv_prob_concat = []
-        for i in keys:
-            S_traj, A_traj, R_traj, _, surv_prob_traj, don_traj, dop_traj = self.masked_buffer[
-                i][:7]
-            if self.misc_buffer:
-                mnar_nextobs_arr = self.misc_buffer[i].get(
-                    'mnar_nextobs_arr', None)
-                mnar_noninstrument_arr = self.misc_buffer[i].get(
-                    'mnar_noninstrument_arr', None)
-                mnar_instrument_arr = self.misc_buffer[i].get(
-                    'mnar_instrument_arr', None)
-                if mnar_nextobs_arr is not None and mnar_noninstrument_arr is not None and mnar_instrument_arr is not None:
-                    assert mnar_nextobs_arr.shape[
-                        0] == mnar_noninstrument_arr.shape[
-                            0] == mnar_instrument_arr.shape[0]
+        if missing_mechanism == 'mar':
+            states_list = []
+            actions_list = []
+            rewards_list = []
+            traj_idxs = []
+            for i in keys:
+                S_traj, A_traj, R_traj = self.masked_buffer[i][:3]
+                traj_len = len(A_traj)
+                states = S_traj[self.dropout_obs_count_thres:traj_len]
+                actions = A_traj[self.dropout_obs_count_thres:traj_len] # (traj_len,)
+                # use previous step of reward
+                rewards = np.append(0, R_traj[:(
+                    traj_len -
+                    1)])[self.dropout_obs_count_thres:traj_len].reshape(-1, 1) # (traj_len,1)
+                states_list.append(states)
+                actions_list.append(actions)
+                rewards_list.append(rewards)
+                traj_idxs.extend([i] * len(actions))
+            
+            # concatenate together
+            states = np.vstack(states_list)
+            rewards = np.vstack(rewards_list)
+            actions = np.concatenate(actions_list)
+            traj_idxs = np.array(traj_idxs, dtype=int)
+            states = self.fitted_dropout_model['scaler'].transform(states)
+            if self._include_reward:
+                X_mat = np.hstack([states, rewards])
             else:
+                X_mat = states
+            # predict dropout propensity
+            dropout_prob_pred = np.zeros_like(actions, dtype=float)
+            for a in range(self.num_actions):
+                if any(actions == a) == False:
+                    continue
+                if isinstance(self.fitted_dropout_model[a], float):
+                    dropout_prob_pred[actions == a] = self.fitted_dropout_model[a]
+                else:
+                    dropout_prob_pred[actions == a] = self.fitted_dropout_model[a].predict_proba(
+                                X=X_mat[actions == a])[:, 1]
+            
+            # assign to each trajectory
+            for i in keys:
+                traj_dropout_prob_pred = np.append(np.array([0] * self.dropout_obs_count_thres),
+                                 dropout_prob_pred[traj_idxs == i])
+                traj_surv_prob_pred = (1 - traj_dropout_prob_pred).cumprod()
+                self.propensity_pred[i] = [traj_dropout_prob_pred, traj_surv_prob_pred]
+        elif missing_mechanism == 'mnar':
+            states_list, next_states_list = [], []
+            actions_list = []
+            rewards_list = []
+            traj_idxs = []
+            y_list, u_list, z_list = [], [], []
+            for i in keys:
+                S_traj, A_traj, R_traj = self.masked_buffer[i][:3]
+                traj_len = len(A_traj)
+                states = S_traj[self.dropout_obs_count_thres:traj_len]
+                actions = A_traj[self.dropout_obs_count_thres:traj_len] # (traj_len,)
+                if len(S_traj) == traj_len:
+                    next_states = np.vstack([
+                        S_traj[self.dropout_obs_count_thres + 1:], 
+                        [[np.nan] * self.state_dim]])
+                else:
+                    next_states = S_traj[self.dropout_obs_count_thres+1:traj_len+1]
+                # use current reward
+                rewards = R_traj[self.dropout_obs_count_thres:traj_len].reshape(-1, 1) # (traj_len,1)
+                
+                states_list.append(states)
+                next_states_list.append(next_states)
+                actions_list.append(actions)
+                rewards_list.append(rewards)
+                traj_idxs.extend([i] * len(actions))
+                
+                # dropout model related information
                 mnar_nextobs_arr = None
                 mnar_noninstrument_arr = None
                 mnar_instrument_arr = None
-
-            if missing_mechanism == 'mar':
-                traj_len = len(A_traj)
-                obs = S_traj[self.dropout_obs_count_thres:traj_len]
-                actions = A_traj[self.dropout_obs_count_thres:traj_len]
-                # rewards = R_traj[:traj_len].reshape(-1, 1)
-                rewards = np.append(0, R_traj[:(
-                    traj_len -
-                    1)])[self.dropout_obs_count_thres:traj_len].reshape(-1, 1)
-                obs = self.fitted_dropout_model['scaler'].transform(obs)
+                if self.misc_buffer:
+                    mnar_nextobs_arr = self.misc_buffer[i].get(
+                        'mnar_nextobs_arr', None)
+                    mnar_noninstrument_arr = self.misc_buffer[i].get(
+                        'mnar_noninstrument_arr', None)
+                    mnar_instrument_arr = self.misc_buffer[i].get(
+                        'mnar_instrument_arr', None)
+                    if mnar_instrument_arr is not None and mnar_noninstrument_arr is not None \
+                        and mnar_nextobs_arr is not None:
+                        assert mnar_nextobs_arr.shape[0] == mnar_noninstrument_arr.shape[0] and \
+                            mnar_nextobs_arr.shape[0] == mnar_instrument_arr.shape[0]
+                
+                # specify y_arr
                 if self._include_reward:
-                    X_mat = np.hstack([obs, rewards])
-                else:
-                    X_mat = obs
-                # don't forget to cast dtype as float
-                dropout_prob_pred = np.zeros_like(
-                    don_traj[self.dropout_obs_count_thres:traj_len],
-                    dtype=float)
-                for a in range(self.num_actions):
-                    if any(actions == a) == False:
-                        continue
-                    if isinstance(self.fitted_dropout_model[a], float):
-                        dropout_prob_pred[actions == a] = self.fitted_dropout_model[a]
-                    else:
-                        dropout_prob_pred[actions == a] = self.fitted_dropout_model[a].predict_proba(
-                                    X=X_mat[actions == a])[:, 1]
-            elif missing_mechanism == 'mnar':
-                traj_len = A_traj.shape[0]
-                obs = S_traj[self.dropout_obs_count_thres:traj_len]
-                actions = A_traj[self.dropout_obs_count_thres:traj_len]
-                if len(S_traj) == traj_len:
-                    next_obs = np.vstack([
-                        S_traj[self.dropout_obs_count_thres + 1:],
-                        [[np.nan] * self.state_dim]
-                    ])
-                else:
-                    next_obs = S_traj[self.dropout_obs_count_thres + 1:]
-                obs = self.fitted_dropout_model['scaler'].transform(obs)
-                next_obs = self.fitted_dropout_model['scaler'].transform(
-                    next_obs)
-                orig_next_obs = self.fitted_dropout_model[
-                    'scaler'].inverse_transform(
-                        next_obs)  # transform to its original scale
-                rewards = R_traj[self.
-                                 dropout_obs_count_thres:traj_len].reshape(
-                                     -1, 1)
-                if self._include_reward:
-                    # use reward as outcome
-                    y_arr = rewards
-                    y_dim = 1
+                    y_arr = rewards # use reward as outcome
                 elif mnar_nextobs_arr is None:
                     if self._mnar_y_transform is not None:
-                        y_arr = self._mnar_y_transform(
-                            np.hstack([orig_next_obs, rewards]))
-                    # elif self._include_reward:
-                    #     y_arr = rewards
+                        y_arr = self._mnar_y_transform(np.hstack([next_states, rewards]))
                     else:
-                        y_arr = next_obs
-                    if len(y_arr.shape) == 1 or (len(y_arr.shape) == 2
-                                                 and y_arr.shape[1] == 1):
-                        y_dim = 1
-                    else:
-                        y_dim = y_arr.shape[1]
-                    y_arr = y_arr.reshape(-1, y_dim)
+                        y_arr = self.fitted_dropout_model['scaler'].transform(next_states)
                 else:
-                    y_arr = mnar_nextobs_arr[self.
-                                             dropout_obs_count_thres:traj_len]
-                    if len(y_arr.shape) == 1:
-                        y_dim = 1
-                    else:
-                        y_dim = y_arr.shape[1]
-                    y_arr = y_arr.reshape(-1, y_dim)
+                    y_arr = mnar_nextobs_arr[self.dropout_obs_count_thres:traj_len]
+                if len(y_arr.shape) == 1 or y_arr.shape[1] == 1:
+                    y_dim = 1
+                else:
+                    y_dim = y_arr.shape[1]
+                y_arr = y_arr.reshape(-1, y_dim)
                 if self._scale_obs:
                     assert hasattr(self, '_y_arr_scaler'), 'scaler for outcome not found'
                     y_arr = self._y_arr_scaler.transform(y_arr)
+                y_list.append(y_arr)
+                # specify u_arr
                 if mnar_noninstrument_arr is None:
                     if not isinstance(self._instrument_var_index,
                                       np.ndarray) and not hasattr(
                                           self._instrument_var_index,
                                           '__iter__'):
                         non_instrument_index = [
-                            i for i in range(obs.shape[1])
+                            i for i in range(states.shape[1])
                             if i != self._instrument_var_index
                         ]
                     else:
                         non_instrument_index = [
-                            i for i in range(obs.shape[1])
+                            i for i in range(states.shape[1])
                             if i not in set(self._instrument_var_index)
                         ]
                     u_dim = len(non_instrument_index)
-                    u_arr = obs[:,
-                                non_instrument_index].reshape(len(obs), u_dim)
+                    u_arr = states[:, non_instrument_index].reshape(len(states), u_dim)
                 else:
                     u_arr = mnar_noninstrument_arr[
                         self.dropout_obs_count_thres:traj_len]
@@ -1784,30 +1736,42 @@ class SimulationBase(object):
                 if self._scale_obs:
                     assert hasattr(self, '_u_arr_scaler'), 'scaler for non-instrumental variables is not found'
                     u_arr = self._u_arr_scaler.transform(u_arr)
+                u_list.append(u_arr)
+                # specify z_arr
                 if mnar_instrument_arr is None:
-                    z_arr = obs[:, self._instrument_var_index]
+                    z_arr = states[:, self._instrument_var_index]
                     z_arr = np.digitize(z_arr, bins=self.instrument_disc_bins)
                 else:
                     z_arr = mnar_instrument_arr[
                         self.dropout_obs_count_thres:traj_len].reshape(-1)
+                    # discretized Z start from 1 instead of 0
                     if min(z_arr) <= 0:
                         z_arr -= min(z_arr) - 1
-
-                mnar_clf = self.fitted_dropout_model['model']
-                L = mnar_clf.L
-                dropout_prob_pred = 1 - \
-                    mnar_clf.predict_proba(u=u_arr, z=z_arr, y=y_arr)
-
-            dropout_prob_pred = np.append(np.array([0] * self.dropout_obs_count_thres),
-                                 dropout_prob_pred)
-
-            surv_prob_pred = (1 - dropout_prob_pred).cumprod()
-            self.propensity_pred[i] = [dropout_prob_pred, surv_prob_pred]
-            dropout_prob_concat.append(dropout_prob_pred)
-            surv_prob_concat.append(surv_prob_pred)
-
-        dropout_prob_concat = np.concatenate(dropout_prob_concat)
-        surv_prob_concat = np.concatenate(surv_prob_concat)
+                z_list.append(z_arr)
+        
+            # concatenate together
+            states = np.vstack(states_list)
+            next_states = np.vstack(next_states_list)
+            states = self.fitted_dropout_model['scaler'].transform(states)
+            next_states = self.fitted_dropout_model['scaler'].transform(next_states)
+            rewards = np.vstack(rewards_list)
+            actions = np.concatenate(actions_list)
+            traj_idxs = np.array(traj_idxs, dtype=int)
+            y_arr = np.vstack(y_list)
+            u_arr = np.vstack(u_list)
+            z_arr = np.concatenate(z_list)
+            
+            # predict dropout propensity
+            mnar_clf = self.fitted_dropout_model['model']
+            dropout_prob_pred = 1 - \
+                mnar_clf.predict_proba(u=u_arr, z=z_arr, y=y_arr)
+            
+            # assign to each trajectory
+            for i in keys:
+                traj_dropout_prob_pred = np.append(np.array([0] * self.dropout_obs_count_thres),
+                                 dropout_prob_pred[traj_idxs == i])
+                traj_surv_prob_pred = (1 - traj_dropout_prob_pred).cumprod()
+                self.propensity_pred[i] = [traj_dropout_prob_pred, traj_surv_prob_pred]
 
     def estimate_behavior_policy(
             self,
