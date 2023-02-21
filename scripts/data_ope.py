@@ -1009,7 +1009,7 @@ if __name__ == '__main__':
                 seed=seed,
                 include_reward=include_reward,
                 instrument_var_index=mnar_instrument_var_index,
-                gamma_init=None,  # None
+                psi_init=None,  # None
                 bandwidth_factor=bandwidth_factor,
                 verbose=True)
             mimic_ope.estimate_missing_prob(missing_mechanism=missing_mechanism)
@@ -1017,11 +1017,11 @@ if __name__ == '__main__':
             print(
                 f'Finished! {fit_dropout_end-fit_dropout_start} secs elapsed.')
             if missing_mechanism == 'mnar':
-                gamma_hat = mimic_ope.fitted_dropout_model['model'].gamma_hat
+                psi_hat = mimic_ope.fitted_dropout_model['model'].psi_hat
             else:
-                gamma_hat = '[null]'
+                psi_hat = '[null]'
         else:
-            gamma_hat = '[null]'
+            psi_hat = '[null]'
 
         if ope:
             filename_train = f'train_with_T_{T}_n_{n}_L_{dof}_gamma{discount}_{estimator_str}'
@@ -1071,7 +1071,7 @@ if __name__ == '__main__':
             result_summary['V_int_lower'].append(V_int_lower)
             result_summary['V_int_upper'].append(V_int_upper)
             if ipw and estimate_missing_prob and missing_mechanism == 'mnar':
-                result_summary['gamma_hat'].append(list(mimic_ope.mnar_gamma))
+                result_summary['psi_hat'].append(list(mimic_ope.mnar_psi))
 
             if ope_export_dir:
                 filename_train = os.path.join(ope_export_dir, filename_train)

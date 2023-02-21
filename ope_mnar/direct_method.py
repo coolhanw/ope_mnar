@@ -13,6 +13,7 @@ from scipy.interpolate import BSpline
 # ML model
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import Ridge, LinearRegression
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -28,6 +29,191 @@ from base import SimulationBase
 from batch_rl.dqn import QNetwork
 
 __all__ = ['LSTDQ', 'FQE']
+
+class SplineQRegressor(object):
+    def __init__(
+            self,
+            state_dim,
+            num_actions,
+            knots,
+            L=10,
+            d=3,
+            product_tensor=True,
+            ridge_factor=0.,
+            basis_scale_factor=1.
+        ):
+        self.state_dim = state_dim
+        self.num_actions = num_actions
+
+        assert len(knots) == L + d + 1
+        if len(knots.shape) == 1:
+            knots = np.tile(knots.reshape(-1, 1), reps=(1, self.state_dim))
+        self.knot = knots
+        self.product_tensor = product_tensor
+        self.basis_scale_factor = basis_scale_factor
+        self.ridge_factor = ridge_factor
+
+        # construct splines
+        self.bspline = []
+        self.para_dim = 1 if self.product_tensor else 0
+        for i in range(self.state_dim):
+            tmp = []
+            for j in range(L):
+                cof = [0] * L
+                cof[j] = 1
+                spf = BSpline(t=self.knot.T[i], c=cof, k=d, extrapolate=True)
+                tmp.append(spf)
+            self.bspline.append(tmp)
+            if self.product_tensor:
+                self.para_dim *= len(self.bspline[i])
+            else:
+                self.para_dim += len(self.bspline[i])
+            print(
+                "Building %d-th basis spline (total %d state dimemsion) which has %d basis "
+                % (i, self.state_dim, len(self.bspline[i])))
+
+        # self.para = {}
+        # for i in range(self.num_actions):
+        #     self.para[i] = np.random.normal(loc=0,
+        #                                     scale=0.1,
+        #                                     size=self.para_dim)
+        # self.est_beta = np.concatenate([self.para[i] for i in range(self.num_actions)]).reshape(-1,1)
+
+        self.lm = Ridge(alpha=self.ridge_factor, fit_intercept=False)
+            
+    def _predictor(self, states):
+        """
+        Return value of basis functions given states and actions. 
+
+        Args:
+            states (np.ndarray): array of scaled states, dimension (n, state_dim)
+
+        Returns:  
+            output (np.ndarray): array of basis values, dimension (n, para_dim)
+        """
+        states = np.array(states)  # (n,S_dim)
+        if len(states.shape) == 1:
+            states = np.expand_dims(states, axis=0)  # (n,S_dim)
+        states = states.T  # (S_dim,n)
+        
+        assert len(self.bspline) > 0
+        if self.product_tensor:
+            output = np.vstack(
+                list(
+                    map(partial(np.prod, axis=0),
+                        (product(*[
+                            np.array([func(s) for func in f])
+                            for f, s in zip(self.bspline, states)
+                        ],
+                                    repeat=1)))))  # ((L-d)^S_dim, n)
+        else:
+            output = np.concatenate([
+                np.array([func(s) for func in f])
+                for f, s in zip(self.bspline, states)
+            ])  # ((L-d)*S_dim, n)
+        output = output.T  # (n, para_dim)
+        output *= self.basis_scale_factor
+        return output
+
+    def _Xi(self, states, actions):
+        """
+        Return Xi given states and actions. 
+
+        Args:
+            states (np.ndarray) : An array of scaled states, dimension (n, state_dim)
+            actions (np.ndarray) : An array of actions, dimension (n, )
+
+        Returns:
+            xi (np.ndarray): An array of Xi values, dimension (n, para_dim * num_actions)
+        """
+        states = np.array(states)  # (n, S_dim)
+        if len(states.shape) == 1:
+            states = np.expand_dims(states, axis=0)  # (n, S_dim)
+        nrows = states.shape[0]
+        predictor = self._predictor(states=states)  # (n, para_dim)
+
+        actions = np.array(actions).astype(np.int8).reshape(nrows)  # (n,)
+        xi = np.tile(predictor,
+                     reps=self.num_actions)  # (n, para_dim * num_actions)
+        action_mask = np.repeat(np.eye(self.num_actions)[actions],
+                                repeats=self.para_dim,
+                                axis=1)  # (n, para_dim * num_actions)
+        return xi * action_mask
+    
+    def _U(self, states, action_probs):
+        """
+        Return U given states and policy. 
+
+        Args:
+            states (np.ndarray) : array of states, dimension (n, state_dim)
+            action_probs (np.ndarray) : array of action probabilities under target policy, dimension (n, num_actions)
+
+        Returns
+            U (np.ndarray): array of U values, dimension (n, para_dim * num_actions)
+        """
+        states = np.array(states)
+        if len(states.shape) == 1:
+            states = np.expand_dims(states, axis=0)  # (n,S_dim)
+
+        predictor = self._predictor(states=states)
+        U = np.tile(predictor,
+                    reps=self.num_actions)  # (n, para_dim * num_actions)
+        policy_mask = np.repeat(action_probs, repeats=self.para_dim,
+                                axis=1)  # (n, para_dim * num_actions)
+        return U * policy_mask  # (n, para_dim * num_actions)
+
+    def fit(
+            self, 
+            states, 
+            actions, 
+            targets,
+            sample_weights=None):
+        
+        if sample_weights is None:
+            sample_weights = np.ones(shape=(len(states), 1))
+        self.total_T_ipw = sum(sample_weights)
+        if sample_weights.ndim == 1:
+            sample_weights = sample_weights[:, np.newaxis]
+        if targets.ndim == 1:
+            targets = targets[:, np.newaxis]
+
+        Xi_mat = self._Xi(states=states, actions=actions)
+        # mat1 = np.matmul(Xi_mat.T, sample_weights * Xi_mat)  # much faster computation
+        # mat2 = np.matmul(Xi_mat.T, sample_weights * targets)
+
+        # self.Sigma_hat = np.diag(
+        #     [self.ridge_factor] * mat1.shape[0]) + mat1 / self.total_T_ipw
+        # self.Sigma_hat = self.Sigma_hat.astype(float)
+        # self.inv_Sigma_hat = np.linalg.pinv(self.Sigma_hat)
+        # self.vector = mat2 / self.total_T_ipw
+        
+        # self.est_beta = np.matmul(self.inv_Sigma_hat, self.vector)
+
+        self.lm.fit(X=Xi_mat, y=targets, sample_weight=sample_weights.reshape(-1))
+
+    def predict_Q(self, states, actions):
+        """
+        Return predicted Q value. 
+
+        Args:
+            states (np.ndarray) : array of scaled states, dimension (n, state_dim)
+            actions (np.ndarray) : array of actions
+        """
+        Xi_mat = self._Xi(states=states, actions=actions)
+        # return np.matmul(Xi_mat, self.est_beta) # (n, 1)
+        return self.lm.predict(X=Xi_mat) # (n, 1)
+    
+    def predict_V(self, states, action_probs):
+        """
+        Return predicted value. 
+
+        Args:
+            states (np.ndarray) : array of scaled states, dimension (n, state_dim)
+            action_probs (np.ndarray) : array of action probabilities under target policy, dimension (n, num_actions)
+        """
+        U_mat = self._U(states=states, action_probs=action_probs)
+        # return np.matmul(U_mat, self.est_beta) # (n, 1)
+        return self.lm.predict(X=U_mat) # (n, 1)
 
 
 class LSTDQ(SimulationBase):
@@ -232,7 +418,6 @@ class LSTDQ(SimulationBase):
                                 for f, s in zip(self.bspline, states)
                             ],
                                      repeat=1)))))  # ((L-d)^S_dim, n)
-                output *= self.basis_scale_factor  #
             else:
                 output = np.concatenate([
                     np.array([func(s) for func in f])
@@ -419,8 +604,6 @@ class LSTDQ(SimulationBase):
         action_list, reward_list = [], []
         surv_prob_list, inverse_wt_list = [], []
         dropout_prob_list = []
-        max_inverse_wt = 1
-        min_inverse_wt = 1 / prob_lbound if prob_lbound is not None else 0
 
         training_buffer = self.masked_buffer
         keys = training_buffer.keys()
@@ -487,19 +670,15 @@ class LSTDQ(SimulationBase):
 
         mat1 = np.matmul(Xi_mat.T, inverse_wts * (Xi_mat - self.gamma * U_mat))
         mat2 = np.matmul(Xi_mat.T, inverse_wts * rewards)
-        max_inverse_wt = np.max(inverse_wts)
-        min_inverse_wt = np.min(inverse_wts)
 
         if verbose:
-            print('MaxInverseWeight')
-            print(max_inverse_wt)
-            print('MinInverseWeight')
-            print(min_inverse_wt)
+            print('MaxInverseWeight', np.max(inverse_wts))
+            print('MinInverseWeight', np.min(inverse_wts))
 
-        self.max_inverse_wt = max_inverse_wt
+        self.max_inverse_wt = np.max(inverse_wts)
         self.total_T = total_T
         if ipw:
-            self.total_T_ipw = self.n * (self.max_T - self.burn_in - 1)
+            self.total_T_ipw = self.n * (self.max_T - self.burn_in) # self.n * (self.max_T - self.burn_in - 1)
         else:
             self.total_T_ipw = total_T
 
@@ -1035,8 +1214,6 @@ class LSTDQ(SimulationBase):
                            S_inits=None,
                            MC_size=None):
         """Main function for getting value confidence interval."""
-
-        print("Getting value interval estimates")
         if S_inits is None:
             if MC_size is not None:
                 S_inits = self.sample_initial_states(size=MC_size,
@@ -1070,7 +1247,7 @@ class LSTDQ(SimulationBase):
         }
         return inference_summary
 
-    def validate_Q(self, grid_size=10, visualize=False):
+    def validate_Q(self, grid_size=10, visualize=False, seed=None):
         self.grid = []
         self.idx2states = collections.defaultdict(list)
 
@@ -1090,35 +1267,37 @@ class LSTDQ(SimulationBase):
         # generate trajectories under the target policy
         init_states = states  # self._initial_obs
         init_actions = actions  # self._init_actions
-        old_num_envs = self.eval_env.num_envs
         eval_size = len(init_states)
+        if self.eval_env.is_vector_env:
+            old_num_envs = self.eval_env.num_envs
+            self.eval_env.num_envs = eval_size
+            self.eval_env.observation_space = batch_space(
+                self.eval_env.single_observation_space, n=self.eval_env.num_envs)
+            self.eval_env.action_space = Tuple(
+                (self.eval_env.single_action_space, ) * self.eval_env.num_envs)
 
-        self.eval_env.num_envs = eval_size
-        self.eval_env.observation_space = batch_space(
-            self.eval_env.single_observation_space, n=self.eval_env.num_envs)
-        self.eval_env.action_space = Tuple(
-            (self.eval_env.single_action_space, ) * self.eval_env.num_envs)
-
-        trajectories = self.gen_batch_trajs(policy=self.target_policy,
-                                            seed=None,
-                                            S_inits=init_states,
-                                            A_inits=init_actions,
-                                            burn_in=0,
-                                            evaluation=True)
-        rewards_history = self.eval_env.rewards_history * \
-                    self.eval_env.states_history_mask[:,
-                                                      :self.eval_env.rewards_history.shape[1]]
-        Q_ref = np.matmul(
-            rewards_history,
-            self.gamma**np.arange(start=0,
-                                  stop=rewards_history.shape[1]).reshape(
-                                      -1, 1)).squeeze()
-        # recover eval_env
-        self.eval_env.num_envs = old_num_envs
-        self.eval_env.observation_space = batch_space(
-            self.eval_env.single_observation_space, n=self.eval_env.num_envs)
-        self.eval_env.action_space = Tuple(
-            (self.eval_env.single_action_space, ) * self.eval_env.num_envs)
+            trajectories = self.gen_batch_trajs(policy=self.target_policy,
+                                                seed=seed,
+                                                S_inits=init_states,
+                                                A_inits=init_actions,
+                                                burn_in=0,
+                                                evaluation=True)
+            rewards_history = self.eval_env.rewards_history * \
+                        self.eval_env.states_history_mask[:,
+                                                        :self.eval_env.rewards_history.shape[1]]
+            Q_ref = np.matmul(
+                rewards_history,
+                self.gamma**np.arange(start=0,
+                                    stop=rewards_history.shape[1]).reshape(
+                                        -1, 1)).squeeze()
+            # recover eval_env
+            self.eval_env.num_envs = old_num_envs
+            self.eval_env.observation_space = batch_space(
+                self.eval_env.single_observation_space, n=self.eval_env.num_envs)
+            self.eval_env.action_space = Tuple(
+                (self.eval_env.single_action_space, ) * self.eval_env.num_envs)
+        else:
+            raise NotImplementedError
 
         discretized_states = np.zeros_like(states)
         for i in range(self.state_dim):
@@ -1158,16 +1337,25 @@ class LSTDQ(SimulationBase):
                                    self.num_actions,
                                    figsize=(5 * self.num_actions, 8))
             for a in range(self.num_actions):
-                sns.heatmap(Q_mat[a], cmap="YlGnBu", linewidth=1, ax=ax[0, a])
-                ax[0, a].invert_yaxis()
-                ax[0, a].set_title(f'estimated Q (action={a})')
+                # sns.heatmap(Q_mat[a], cmap="YlGnBu", linewidth=1, ax=ax[0, a])
+                # ax[0, a].invert_yaxis()
+                # ax[0, a].set_title(f'estimated Q (action={a})')
+                sns.heatmap(Q_mat[a], cmap="YlGnBu", linewidth=1, ax=ax[a,1])
+                ax[a,1].invert_yaxis()
+                ax[a,1].set_title(f'estimated Q (action={a})')
             for a in range(self.num_actions):
+                # sns.heatmap(Q_ref_mat[a],
+                #             cmap="YlGnBu",
+                #             linewidth=1,
+                #             ax=ax[1, a])
+                # ax[1, a].invert_yaxis()
+                # ax[1, a].set_title(f'empirical Q (action={a})')
                 sns.heatmap(Q_ref_mat[a],
                             cmap="YlGnBu",
                             linewidth=1,
-                            ax=ax[1, a])
-                ax[1, a].invert_yaxis()
-                ax[1, a].set_title(f'empirical Q (action={a})')
+                            ax=ax[a,0])
+                ax[a,0].invert_yaxis()
+                ax[a,0].set_title(f'empirical Q (action={a})')
             plt.savefig('./output/Qfunc_heatplot.png')
 
 class FQE(SimulationBase):
@@ -1213,9 +1401,12 @@ class FQE(SimulationBase):
     def estimate_Q(
             self,
             target_policy,
+            ipw=False,
+            estimate_missing_prob=True,
+            prob_lbound=1e-2,
             max_iter=200,
             tol=0.001,
-            use_RF=False,
+            func_class='nn', # 'nn', 'rf', 'spline'
             hidden_sizes=[256, 256],
             lr=0.001,
             batch_size=128,
@@ -1224,14 +1415,24 @@ class FQE(SimulationBase):
             scaler="Standard",
             print_freq=10,
             verbose=False,
-            # other RF arguments
+            # other arguments passed to func_class
             **kwargs):
 
-        self.replay_buffer = SimpleReplayBuffer(trajs=self.masked_buffer,
+        if not estimate_missing_prob:
+            self.replay_buffer = SimpleReplayBuffer(trajs=self.masked_buffer, max_T=self.max_T - self.burn_in, 
                                                 seed=self.seed)
+        else:
+            assert hasattr(
+                self, 'propensity_pred'
+            ), 'please call function self.estimate_missing_prob() first'
+            self.replay_buffer = SimpleReplayBuffer(trajs=self.masked_buffer, max_T=self.max_T - self.burn_in, 
+                                                prop_info=self.propensity_pred,
+                                                seed=self.seed)
+
         self.target_policy = target_policy
-        self.use_RF = use_RF
-        self.Q_func_class = 'nn' if not use_RF else 'rf'
+        self.ipw = ipw
+        self.prob_lbound = prob_lbound
+        self.Q_func_class = func_class.lower()
         self.lr = lr
 
         if scaler == "NormCdf":
@@ -1250,13 +1451,12 @@ class FQE(SimulationBase):
             with open(scaler, 'rb') as f:
                 self.scaler = pickle.load(f)
 
-        if use_RF:
+        if self.Q_func_class == 'rf':
             self.Q_model = RandomForestRegressor(**kwargs,
                                                n_jobs=-1,
                                                verbose=False,
                                                random_state=self.seed)
-        else:
-            # NN
+        elif self.Q_func_class == 'nn':
             self.Q_model = QNetwork(input_dim=self.state_dim,
                                   output_dim=self.num_actions,
                                   hidden_sizes=hidden_sizes,
@@ -1265,12 +1465,20 @@ class FQE(SimulationBase):
                                          output_dim=self.num_actions,
                                          hidden_sizes=hidden_sizes,
                                          hidden_nonlinearity=nn.ReLU())
+        elif self.Q_func_class == 'spline':
+            self.Q_model = SplineQRegressor(
+                state_dim=self.state_dim,
+                num_actions=self.num_actions,
+                **kwargs
+            )
 
         # state features shuold be scaled first
         self._train(max_iter=max_iter,
                     tol=tol,
                     batch_size=batch_size,
                     epoch=epoch,
+                    ipw=ipw,
+                    prob_lbound=prob_lbound,
                     patience=patience,
                     print_freq=print_freq,
                     verbose=verbose)
@@ -1280,9 +1488,12 @@ class FQE(SimulationBase):
                tol,
                batch_size,
                epoch,
-               patience,
+               ipw=False,
+               prob_lbound=1e-2,
+               patience=30,
                print_freq=10,
                verbose=False):
+        
         state = self.replay_buffer.states
         action = self.replay_buffer.actions
         reward = self.replay_buffer.rewards
@@ -1290,6 +1501,7 @@ class FQE(SimulationBase):
         if state.ndim == 1:
             state = state.reshape((-1, 1))
             next_state = next_state.reshape((-1, 1))
+        
         pi_next_state_prob = self.target_policy.get_action_prob(
             next_state)  # the input should be on the original scale
         old_target_Q = reward / (1 - self.gamma)
@@ -1299,10 +1511,22 @@ class FQE(SimulationBase):
         self.scaler.fit(state_concat)
         state = self.scaler.transform(state)
         next_state = self.scaler.transform(next_state)
+        
+        if ipw:
+            dropout_prob = self.replay_buffer.dropout_prob
+        else:
+            dropout_prob = np.zeros_like(action)
+        inverse_wts = 1 / np.clip(a=1 - dropout_prob, a_min=prob_lbound, a_max=1).astype(float)
+        # self.total_T_ipw = self.n * (self.max_T - self.burn_in) if ipw else len(inverse_wts)
+        self.total_T_ipw = sum(inverse_wts)
+
+        if verbose:
+            print('MaxInverseWeight', np.max(inverse_wts))
+            print('MinInverseWeight', np.min(inverse_wts))
 
         for itr in range(max_iter):
 
-            if self.use_RF:
+            if self.Q_func_class == 'rf':
                 if itr > 0:
                     target_Q = reward + self.gamma * np.sum(
                         self.Q_model.predict(next_state) * pi_next_state_prob,
@@ -1314,8 +1538,8 @@ class FQE(SimulationBase):
                     _targets = np.zeros(shape=(len(action), self.num_actions))
                     _targets[range(len(action)), action.astype(int)] = target_Q
 
-                self.Q_model.fit(state, _targets)
-            else:
+                self.Q_model.fit(state, _targets, sample_weight=inverse_wts)
+            elif self.Q_func_class == 'nn':
                 self.Q_model.train()
                 # reset optimizer and scheduler
                 self.optimizer = torch.optim.Adam(self.Q_model.parameters(),
@@ -1327,7 +1551,7 @@ class FQE(SimulationBase):
                 wait_count = 0
                 for ep in range(epoch):
                     transitions = self.replay_buffer.sample(batch_size)
-                    state, action, reward, next_state = transitions[:4]
+                    state, action, reward, next_state, dropout_prob = transitions[:5]
                     pi_next_state = self.target_policy.get_action(
                         next_state)  # input should on the original scale
                     pi_next_state_prob = self.target_policy.get_action_prob(
@@ -1344,6 +1568,8 @@ class FQE(SimulationBase):
                     next_state = torch.Tensor(next_state).to(self.device)
                     pi_next_state_prob = torch.Tensor(pi_next_state_prob).to(
                         self.device)
+                    dropout_prob = torch.Tensor(dropout_prob[:, np.newaxis]).to(self.device)
+                    inverse_wts = 1 / torch.clip(input=1 - dropout_prob, min=prob_lbound, max=1).double()
 
                     # Compute the target Q value
                     if itr > 0:
@@ -1360,7 +1586,10 @@ class FQE(SimulationBase):
                     current_Q = self.Q_model(state).gather(dim=1, index=action)
 
                     # Compute Q loss, closely related to HuberLoss
-                    Q_loss = F.smooth_l1_loss(input=current_Q, target=target_Q)
+                    if not ipw:
+                        Q_loss = F.smooth_l1_loss(input=current_Q, target=target_Q)
+                    else:
+                        Q_loss = torch.mean(inverse_wts * (target_Q - current_Q) ** 2)
 
                     # Optimize the Q
                     self.optimizer.zero_grad()
@@ -1405,6 +1634,19 @@ class FQE(SimulationBase):
                 # convert to numpy array for comparison
                 target_Q = target_Q.detach().numpy()
 
+            elif self.Q_func_class == 'spline':
+                if itr > 0:
+                    target_Q = reward + self.gamma * self.Q_model.predict_V(states=next_state, action_probs=pi_next_state_prob).reshape(-1)
+                else:
+                    target_Q = reward / (1 - self.gamma)
+                # target_Q = reward + self.gamma * self.Q_model.predict_V(states=next_state, action_probs=pi_next_state_prob).reshape(-1)
+                
+                self.Q_model.fit(
+                    states=state, 
+                    actions=action, 
+                    targets=target_Q.reshape(-1,1),
+                    sample_weights=inverse_wts)
+
             target_diff = abs(target_Q - old_target_Q).mean() / (
                 abs(old_target_Q).mean() + 1e-6)
 
@@ -1427,10 +1669,13 @@ class FQE(SimulationBase):
             target_param.data.copy_(param.data)
 
     def Q(self, states, actions=None):
+        # note: states should be on the original scale
         if states.ndim == 1:
             states = np.expand_dims(states, 1)
+        
         states = self.scaler.transform(states)
-        if self.use_RF:
+        
+        if self.Q_func_class == 'rf':
             Q_values = self.Q_model.predict(states)
             if actions is not None:
                 return np.take_along_axis(arr=Q_values,
@@ -1438,7 +1683,7 @@ class FQE(SimulationBase):
                                           axis=1)
             else:
                 return Q_values
-        else:
+        elif self.Q_func_class == 'nn':
             states = torch.Tensor(states).to(self.device)
 
             self.Q_model.eval()
@@ -1450,8 +1695,19 @@ class FQE(SimulationBase):
                 return Q_values.gather(dim=1, index=actions).detach().numpy()
             else:
                 return Q_values.detach().numpy()
+        elif self.Q_func_class == 'spline':
+            if actions is not None:
+                return self.Q_model.predict_Q(states=states, actions=actions)
+            else:
+                Q_a_list = []
+                for a in range(self.num_actions):
+                    Q_a = self.Q_model.predict_Q(states=states, actions=np.tile(a, reps=(len(states), 1)))
+                    Q_a_list.append(Q_a)
+                Q_values = np.hstack(Q_a_list)
+                return Q_values
 
     def V(self, states, policy=None):
+        # note: states should be on the original scale
         if states.ndim == 1:
             states = np.expand_dims(states, 1)
         if policy is None:
@@ -1536,7 +1792,7 @@ class MQL(SimulationBase):
                    print_freq=10,
                    patience=10,
                    verbose=False):
-        self.replay_buffer = SimpleReplayBuffer(trajs=self.masked_buffer,
+        self.replay_buffer = SimpleReplayBuffer(trajs=self.masked_buffer, max_T=self.max_T - self.burn_in, 
                                                 seed=self.seed)
 
         self.target_policy = target_policy

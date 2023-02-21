@@ -15,7 +15,7 @@ dependencies:
   - setuptools=58.2.0
   - pip:
     - dowel==0.0.3
-    - gym==0.23.1
+    - gym==0.26.2
     - matplotlib==3.4.3
     - numpy==1.20.1
     - seaborn==0.11.2

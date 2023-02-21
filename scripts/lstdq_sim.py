@@ -28,7 +28,7 @@ parser.add_argument('--max_episode_length', type=int, default=25)  # 10, 25
 parser.add_argument('--discount', type=float, default=0.8)
 parser.add_argument('--num_trajs', type=int, default=500)  # 250, 500
 parser.add_argument('--burn_in', type=int, default=0)
-parser.add_argument('--mc_size', type=int, default=2) # 250
+parser.add_argument('--mc_size', type=int, default=1) 
 parser.add_argument('--eval_policy_mc_size', type=int, default=10000)
 parser.add_argument('--eval_horizon', type=int, default=250)
 parser.add_argument('--dropout_scheme', type=str, default='mnar.v0', choices=["0", "mnar.v0", "mar.v0"])  # 'mnar.v0'
@@ -50,7 +50,7 @@ parser.add_argument('--weight_curr_step',
 parser.add_argument('--env_model_type', type=str, default='linear')
 parser.add_argument('--vectorize_env',
                     type=lambda x: (str(x).lower() == 'true'),
-                    default=False)
+                    default=True)
 args = parser.parse_args()
 
 if __name__ == '__main__':
@@ -83,10 +83,16 @@ if __name__ == '__main__':
     grid_search = False
     basis_scale_factor = 100  # 100
     spline_degree = 3
-    if adaptive_dof:
-        dof = max(4, int(np.sqrt((n * T)**(3 / 7))))  # degree of freedom
-    else:
-        dof = 7
+    if env_class == 'linear2d':
+        if adaptive_dof:
+            dof = max(4, int(((n * T) ** (3 / 7)) ** (1 / 2)))  # degree of freedom
+        else:
+            dof = 7
+    elif env_class == 'cartpole':
+        if adaptive_dof:
+            dof = max(4, int(((n * T)**(3/7))**(1/4))) # degree of freedom
+        else:
+            dof = 4
     ridge_factor = 1e-3  # 1e-3
     if scale == default_scaler:
         knots = np.linspace(start=-spline_degree / (dof - spline_degree),

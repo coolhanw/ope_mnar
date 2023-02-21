@@ -1,9 +1,15 @@
+import os
 import numpy as np
 import torch
 import torch.nn as nn
 from scipy.interpolate import BSpline
 from functools import partial
 from itertools import product
+import pickle
+from sklearn.preprocessing import StandardScaler
+
+from utils import normcdf, iden, MinMaxScaler
+from batch_rl.dqn import QNetwork
 
 
 class StateActionVisitationModel(nn.Module):
@@ -75,6 +81,204 @@ class StateActionVisitationExpoLinear(nn.Module):
         return torch.log(1.0001 + torch.exp(out))
 
 
+class StateActionVisitationRatioNN():
+    
+    def __init__(self,
+            replay_buffer,
+            initial_state_sampler,
+            discount,
+            hidden_sizes,
+            num_actions=None,
+            q_lr=1e-3,
+            omega_lr=1e-3,
+            scaler=None,
+            device=None):
+
+        if device is None:
+            self.device = torch.device(
+                'cuda' if torch.cuda.is_available() else 'cpu')
+        else:
+            self.device = device
+
+        self.state_dim = replay_buffer.state_dim
+        self.num_actions = num_actions if num_actions is not None else 1
+        self.replay_buffer = replay_buffer
+        self.initial_state_sampler = initial_state_sampler
+        self.gamma = discount
+        self.scaler = scaler
+
+        self._q_network = QNetwork(input_dim=self.state_dim,
+                                    output_dim=self.num_actions,
+                                    hidden_sizes=hidden_sizes)
+        self._q_optimizer = torch.optim.Adam(
+            params=self._q_network.parameters(), lr=q_lr)
+        self._omega_network = QNetwork(input_dim=self.state_dim,
+                                    output_dim=self.num_actions,
+                                    hidden_sizes=hidden_sizes)
+        self._omega_optimizer = torch.optim.Adam(
+            params=self._omega_network.parameters(), lr=omega_lr)
+
+        if scaler == "NormCdf":
+            self.scaler = normcdf()
+        elif scaler == "Identity":
+            self.scaler = iden()
+        elif scaler == "MinMax":
+            self.scaler = MinMaxScaler(
+                min_val=self.env.low, max_val=self.env.high
+            ) if self.env is not None else MinMaxScaler()
+        elif scaler == "Standard":
+            self.scaler = StandardScaler(with_mean=True, with_std=True)
+        else:
+            # a path to a fitted scaler
+            assert os.path.exists(scaler)
+            with open(scaler, 'rb') as f:
+                self.scaler = pickle.load(f)
+
+        # fit the scaler
+        state = self.replay_buffer.states
+        next_state = self.replay_buffer.next_states
+        if state.ndim == 1:
+            state = state.reshape((-1, 1))
+            next_state = next_state.reshape((-1, 1))
+        state_concat = np.vstack([state, next_state])
+        self.scaler.fit(state_concat)
+
+    def fit(
+        self,
+        target_policy,
+        batch_size=32,
+        max_iter=100,
+        ipw=False,
+        prob_lbound=1e-3,
+        print_freq=20,
+    ):
+        self.target_policy = target_policy
+        self.ipw = ipw
+        self.prob_lbound = prob_lbound
+
+        self._q_network.train()
+        self._omega_network.train()
+
+        running_q_losses = []
+        running_omega_losses = []
+
+        for i in range(max_iter):
+            transitions = self.replay_buffer.sample(batch_size)
+            states, actions, rewards, next_states, dropout_prob = transitions[:5]
+            initial_states = self.initial_state_sampler.sample(batch_size)
+            states = self.scaler.transform(states)
+            next_states = self.scaler.transform(next_states)
+            initial_states = self.scaler.transform(initial_states)
+            if actions.ndim == 1:
+                actions = actions.reshape(-1, 1)
+            if dropout_prob.ndim == 1:
+                dropout_prob = dropout_prob.reshape(-1, 1)
+
+            if not self.ipw:
+                dropout_prob = np.zeros_like(actions)
+            inverse_wts = 1 / np.clip(
+                a=1 - dropout_prob, a_min=self.prob_lbound, a_max=1).astype(float)
+
+            states = torch.FloatTensor(states).to(self.device)
+            actions = torch.LongTensor(actions).to(self.device)
+            next_states = torch.FloatTensor(next_states).to(self.device)
+            initial_states = torch.FloatTensor(initial_states).to(self.device)
+            inverse_wts = torch.FloatTensor(inverse_wts).to(self.device)
+            
+            q_loss, omega_loss = self._train_loss(states, actions, next_states,
+                                                    initial_states, inverse_wts)                
+
+            # optimize Q and omega network
+            self._q_optimizer.zero_grad()
+            q_loss.backward()
+            self._q_optimizer.step()
+
+            self._omega_optimizer.zero_grad()
+            omega_loss.backward()
+            self._omega_optimizer.step()
+
+            running_q_losses.append(q_loss.item())
+            running_omega_losses.append(omega_loss.item())
+
+            if i % print_freq == 0:
+                moving_window = 100
+                if i >= moving_window:
+                    mean_q_loss = np.mean(
+                        running_q_losses[(i - moving_window + 1):i + 1])
+                    mean_omega_loss = np.mean(
+                        running_omega_losses[(i - moving_window + 1):i + 1])
+                else:
+                    mean_q_loss = np.mean(running_q_losses[:i + 1])
+                    mean_omega_loss = np.mean(running_omega_losses[:i + 1])
+                print(
+                    "omega(s,a) training {}/{} DONE! q_loss = {:.5f}, omega_loss = {:.5f}"
+                    .format(i, max_iter, mean_q_loss, mean_omega_loss))
+
+
+    def _get_average_value(self, network, states, policy):
+        """
+        Parameters
+        ----------
+        network: nn.Module
+        states: torch.FloatTensor
+        policy: DiscretePolicy
+        """
+        action_weights = policy.get_action_prob(
+            states)  # input should be on the original scale
+        action_weights = torch.Tensor(action_weights).to(self.device)
+        return torch.sum(network(states) * action_weights, dim=1, keepdim=True)
+
+
+    def _train_loss(self, states, actions, next_states, initial_states, weights=None):
+        """
+        Parameters
+        ----------
+        states: torch.FloatTensor, dim=(n,state_dim)
+        actions: torch.LongTensor, dim=(n,1)
+        next_states: torch.FloatTensor, dim=(n,state_dim)
+        initial_states: torch.FloatTensor, dim=(n,state_dim)
+        weights: torch.FloatTensor, dim=(n,1)
+        """
+        if weights is None:
+            weights = torch.ones(size=(len(states), 1))
+        q_values = self._q_network(states).gather(dim=1, index=actions)
+        initial_q_values = self._get_average_value(self._q_network,
+                                                    initial_states,
+                                                    self.target_policy)
+        next_q_values = self._get_average_value(self._q_network, next_states,
+                                                 self.target_policy)
+        omega_values = self._omega_network(states).gather(dim=1, index=actions)
+        bellman_residuals = q_values - self.gamma * next_q_values
+        
+        # loss = - torch.mean(omega_values * bellman_residuals * weights) + (1 - self.gamma) * torch.mean(initial_q_values)
+        
+        q_loss = - omega_values.detach() * bellman_residuals * weights + (1 - self.gamma) * initial_q_values
+        # q_loss = - torch.square(torch.mean(q_loss))
+        q_loss = torch.mean(q_loss)
+
+        omega_loss = - omega_values * bellman_residuals.detach() * weights #+ (1 - self.gamma) * initial_q_values.detach()
+        # omega_loss = torch.square(torch.mean(omega_loss))
+        omega_loss = - torch.mean(omega_loss)
+
+        return q_loss, omega_loss
+
+
+    def omega_prediction(self, inputs):
+        self._omega_network.eval()
+        # batch_size = len(inputs)
+        states = inputs[:, :self.state_dim]
+        actions = inputs[:, [self.state_dim]]
+        states = self.scaler.transform(states)
+        states = torch.FloatTensor(states).to(self.device)
+        actions = torch.LongTensor(actions).to(self.device)
+
+        with torch.no_grad():
+            omega_values = self._omega_network(states).gather(dim=1,
+                                                             index=actions)
+
+        return omega_values.detach().numpy()
+
+
 class StateActionVisitationRatio():
 
     def __init__(
@@ -90,6 +294,7 @@ class StateActionVisitationRatio():
             lr=0.001,
             w_clipping_val=0.5,
             w_clipping_norm=1.0,
+            scaler=None,
             device=None):
 
         if device is None:
@@ -108,6 +313,23 @@ class StateActionVisitationRatio():
         # self.action_range = action_range
         # self.gpu_number = gpu_number
         self.gamma = discount
+        self.scaler = scaler
+
+        if scaler == "NormCdf":
+            self.scaler = normcdf()
+        elif scaler == "Identity" or scaler is None:
+            self.scaler = iden()
+        elif scaler == "MinMax":
+            self.scaler = MinMaxScaler(
+                min_val=self.env.low, max_val=self.env.high
+            ) if self.env is not None else MinMaxScaler()
+        elif scaler == "Standard":
+            self.scaler = StandardScaler(with_mean=True, with_std=True)
+        else:
+            # a path to a fitted scaler
+            assert os.path.exists(scaler)
+            with open(scaler, 'rb') as f:
+                self.scaler = pickle.load(f)
 
         if self.separate_action:
             self.action_dim = 0
@@ -126,6 +348,15 @@ class StateActionVisitationRatio():
                                                          step_size=100,
                                                          gamma=0.99)
 
+        # fit the scaler
+        state = self.replay_buffer.states
+        next_state = self.replay_buffer.next_states
+        if state.ndim == 1:
+            state = state.reshape((-1, 1))
+            next_state = next_state.reshape((-1, 1))
+        state_concat = np.vstack([state, next_state])
+        self.scaler.fit(state_concat)
+
     def _compute_medians(self, n=32, rep=20):
         # do it iteratively to save memory
 
@@ -138,6 +369,7 @@ class StateActionVisitationRatio():
         for _ in range(rep):
             transitions = self.replay_buffer.sample(n)
             state, action = transitions[0], transitions[1]
+            state = self.scaler.transform(state)
             state = torch.Tensor(state)
             state_pairwise_dist = torch.repeat_interleave(
                 input=state, repeats=n, dim=0) - torch.tile(input=state,
@@ -204,9 +436,8 @@ class StateActionVisitationRatio():
 
         X = [state, action]
         """
-        # action *= self.A_factor_over_S
-        # action2 *= self.A_factor_over_S
-
+        state = self.scaler.transform(state)
+        next_state = self.scaler.transform(next_state)
         state, state2 = torch.Tensor(state), torch.Tensor(state2)
         next_state, next_state2 = torch.Tensor(next_state), torch.Tensor(
             next_state2)
@@ -376,12 +607,15 @@ class StateActionVisitationRatio():
         patience=5,
         # rep_loss=3
     ):
-        # TODO: scale state and action first
-
         self.target_policy = target_policy
         self.batch_size = batch_size
         self.median = self._compute_medians()
         print('median', self.median)
+
+        if ipw:
+            self.total_T_ipw = self.replay_buffer.num_trajs * self.replay_buffer.max_T
+        else:
+            self.total_T_ipw = len(self.replay_buffer.states)
 
         wait_count = 0
         min_loss = 1e10
@@ -390,21 +624,24 @@ class StateActionVisitationRatio():
         self.losses = []
         for i in range(max_iter):
 
-            transitions = self.replay_buffer.sample(
-                min(batch_size * 100, self.replay_buffer.N))
-            state, action, next_state = transitions[0], transitions[
-                1], transitions[3]
+            # transitions = self.replay_buffer.sample(
+            #     min(batch_size * 100, self.replay_buffer.N))
+            # state, action, next_state = transitions[0], transitions[
+            #     1], transitions[3]
+            state = self.replay_buffer.states
+            action = self.replay_buffer.actions
+            state = self.scaler.transform(state)
             state, action = torch.Tensor(state), torch.Tensor(
                 action[:, np.newaxis])
-            action = action * self.A_factor_over_S
+            action = action # * self.A_factor_over_S
             state_action = torch.cat([state, action], dim=-1)
             if not self.separate_action:
                 omega = self.model.forward(state_action.to(self.device))
             else:
+                # omega = torch.gather(input=self.model.forward(state.to(self.device)),
+                #                      dim=1, index=(action / self.A_factor_over_S).long())
                 omega = torch.gather(input=self.model.forward(state.to(self.device)),
-                                     dim=1,
-                                     index=(action /
-                                            self.A_factor_over_S).long())
+                                    dim=1, index=action.long())
             self.mean_omega = torch.mean(omega)
             if i % print_freq == 0:
                 print('mean(omega):',
@@ -425,9 +662,11 @@ class StateActionVisitationRatio():
             transitions = self.replay_buffer.sample(batch_size)
             state, action, next_state, dropout_prob = transitions[
                 0], transitions[1], transitions[3], transitions[4]
+            state = self.scaler.transform(state)
+            next_state = self.scaler.transform(next_state)
             state, action, next_state = torch.Tensor(state), torch.Tensor(
                 action[:, np.newaxis]), torch.Tensor(next_state)
-            action = action * self.A_factor_over_S
+            action = action # * self.A_factor_over_S
             dropout_prob = torch.Tensor(dropout_prob[:, np.newaxis])
             if not ipw:
                 dropout_prob = torch.zeros(state.size()[0], 1)
@@ -435,7 +674,7 @@ class StateActionVisitationRatio():
             state_action_repeat = self.repeat(state_action, batch_size)
             pi_next_state = torch.Tensor(
                 self.target_policy.get_action(next_state)
-                [:, np.newaxis]) * self.A_factor_over_S
+                [:, np.newaxis]) # * self.A_factor_over_S
             next_state_pi = torch.cat([next_state, pi_next_state], dim=-1)
             next_state_pi_repeat = self.repeat(next_state_pi, batch_size)
 
@@ -444,17 +683,17 @@ class StateActionVisitationRatio():
             state2 = torch.Tensor(state2)
             pi_state2 = torch.Tensor(
                 self.target_policy.get_action(state2)
-                [:, np.newaxis]) * self.A_factor_over_S
+                [:, np.newaxis]) # * self.A_factor_over_S
             state2_pi = torch.cat([state2, pi_state2], dim=-1)
             state2_pi_tile = self.tile(state2_pi, batch_size)
 
             if not self.separate_action:
                 omega = self.model.forward(state_action.to(self.device))  # n
             else:
+                # omega = torch.gather(input=self.model.forward(state.to(self.device)),
+                #                      dim=1, index=(action / self.A_factor_over_S).long())
                 omega = torch.gather(input=self.model.forward(state.to(self.device)),
-                                     dim=1,
-                                     index=(action /
-                                            self.A_factor_over_S).long())
+                                     dim=1, index=action.long())
             omega = omega / self.mean_omega
             # IPW adjustment for missing data
             omega = omega / torch.clamp(
@@ -493,9 +732,11 @@ class StateActionVisitationRatio():
             state2, action2, next_state2, dropout_prob2 = transitions_tilde[
                 0], transitions_tilde[1], transitions_tilde[
                     3], transitions_tilde[4]
+            state2 = self.scaler.transform(state2)
+            next_state2 = self.scaler.transform(next_state2)
             state2, action2, next_state2 = torch.Tensor(state2), torch.Tensor(
                 action2[:, np.newaxis]), torch.Tensor(next_state2)
-            action2 = action2 * self.A_factor_over_S
+            action2 = action2 # * self.A_factor_over_S
             dropout_prob2 = torch.Tensor(dropout_prob2[:, np.newaxis])
             if not ipw:
                 dropout_prob2 = torch.zeros(state2.size()[0], 1)
@@ -504,23 +745,23 @@ class StateActionVisitationRatio():
                                             batch_size)  # n^2 x ...
             pi_state2 = torch.Tensor(
                 self.target_policy.get_action(state2)
-                [:, np.newaxis]) * self.A_factor_over_S
+                [:, np.newaxis]) # * self.A_factor_over_S
             state2_pi = torch.cat([state2, pi_state2], dim=-1)
             state2_pi_tile = self.tile(state2_pi, batch_size)
 
             pi_next_state2 = torch.Tensor(
                 self.target_policy.get_action(next_state2)
-                [:, np.newaxis]) * self.A_factor_over_S
+                [:, np.newaxis]) # * self.A_factor_over_S
             next_state2_pi = torch.cat([next_state2, pi_next_state2], dim=-1)
             next_state2_pi_tile = self.repeat(next_state2_pi, batch_size)
 
             if not self.separate_action:
                 omega2 = self.model.forward(state2_action2.to(self.device))  # n
             else:
+                # omega2 = torch.gather(input=self.model.forward(state2.to(self.device)),
+                #                       dim=1, index=(action2 / self.A_factor_over_S).long())
                 omega2 = torch.gather(input=self.model.forward(state2.to(self.device)),
-                                      dim=1,
-                                      index=(action2 /
-                                             self.A_factor_over_S).long())
+                                      dim=1, index=action2.long())
             omega2 = omega2 / self.mean_omega  #torch.mean(omega)
             # omega2_tile = torch.squeeze(
             #     torch.tile(omega2, dims=(batch_size, 1)))
@@ -557,13 +798,13 @@ class StateActionVisitationRatio():
 
             pi_state = torch.Tensor(
                 self.target_policy.get_action(state)
-                [:, np.newaxis]) * self.A_factor_over_S
+                [:, np.newaxis]) # * self.A_factor_over_S
             state_pi = torch.cat([state, pi_state], dim=-1)
             state_pi_repeat = self.repeat(state_pi, batch_size)
 
             pi_state2 = torch.Tensor(
                 self.target_policy.get_action(state2)
-                [:, np.newaxis]) * self.A_factor_over_S
+                [:, np.newaxis]) # * self.A_factor_over_S
             state2_pi = torch.cat([state2, pi_state2], dim=-1)
             state2_pi_tile = self.tile(state2_pi, batch_size)
 
@@ -609,43 +850,25 @@ class StateActionVisitationRatio():
             if patience is not None and wait_count >= patience:
                 break
 
-    def batch_prediction(self, inputs, batch_size=int(1024 * 8 * 16)):
+    def omega_prediction(self, inputs):
         inputs = torch.Tensor(inputs)
         self.model.eval()
+        mean_omega = self.mean_omega.detach().numpy()
 
-        if not self.separate_action:
-            inputs[:,
-                   self.state_dim] = inputs[:, self.
-                                            state_dim] * self.A_factor_over_S
-            with torch.no_grad():
-                if inputs.shape[0] > batch_size:
-                    n_batch = inputs.shape[0] // batch_size + 1
-                    input_batches = np.array_split(inputs, n_batch)
-                    return np.vstack([
-                        self.model.forward(inputs.to(self.device)).cpu().numpy()
-                        for inputs in input_batches
-                    ])
-                else:
-                    return self.model.forward(inputs.to(self.device)).cpu().numpy()
-        else:
-            with torch.no_grad():
+        with torch.no_grad():
+            if not self.separate_action:
+                inputs[:,:self.state_dim] = self.scaler.transform(inputs[:,:self.state_dim])
+                inputs[:,self.state_dim] = inputs[:, self.state_dim] # * self.A_factor_over_S
+                omega_hat = self.model.forward(inputs.to(self.device)).cpu().numpy()
+            else:
                 states = inputs[:, :self.state_dim]
+                states = self.scaler.transform(states)
                 action = inputs[:, [self.state_dim]]  # 0-indexed, 1-d action
-                if inputs.shape[0] > batch_size:
-                    n_batch = inputs.shape[0] // batch_size + 1
-                    input_batches = np.array_split(inputs, n_batch)
-                    return np.vstack([
-                        torch.gather(input=self.model.forward(
-                            inputs[:, :self.state_dim].to(self.device)),
-                                     dim=1,
-                                     index=action.long()).cpu().numpy()
-                        for inputs in input_batches
-                    ])
-                else:
-                    return torch.gather(input=self.model.forward(
-                        inputs[:, :self.state_dim].to(self.device)),
-                                        dim=1,
-                                        index=action.long()).cpu().numpy()
+                omega_hat = torch.gather(input=self.model.forward(
+                    inputs[:, :self.state_dim].to(self.device)),
+                                    dim=1,
+                                    index=action.long()).cpu().numpy()
+        return omega_hat / mean_omega # normalize
 
 
 class StateActionVisitationRatioSpline():
@@ -662,6 +885,8 @@ class StateActionVisitationRatioSpline():
         self.scaler = scaler
         self.state_dim = replay_buffer.state_dim
         self.num_actions = num_actions
+        # self.n = self.replay_buffer.num_trajs
+        # self.max_T = self.replay_buffer.max_T
 
     def B_spline(self,
                  L=10,
@@ -768,7 +993,6 @@ class StateActionVisitationRatioSpline():
                                 for f, s in zip(self.bspline, S)
                             ],
                                      repeat=1)))))  # ((L-d)^S_dim, n)
-                output *= self.basis_scale_factor  #
             else:
                 output = np.concatenate([
                     np.array([func(s) for func in f])
@@ -858,8 +1082,16 @@ class StateActionVisitationRatioSpline():
         inverse_wts = 1 / np.clip(
             a=1 - dropout_prob, a_min=prob_lbound, a_max=1).astype(float)
 
+        max_inverse_wt = np.max(inverse_wts)
+        min_inverse_wt = np.min(inverse_wts)
+        print('MaxInverseWeight')
+        print(max_inverse_wt)
+        print('MinInverseWeight')
+        print(min_inverse_wt)
+
         if ipw:
-            self.total_T_ipw = self.n * (self.max_T - self.burn_in - 1)
+            # self.total_T_ipw = self.replay_buffer.num_trajs * (self.max_T - self.burn_in - 1)
+            self.total_T_ipw = self.replay_buffer.num_trajs * self.replay_buffer.max_T
         else:
             self.total_T_ipw = len(inverse_wts)
 
@@ -897,7 +1129,7 @@ class StateActionVisitationRatioSpline():
             self.para[i] = self.est_alpha[i * self.para_dim:(i + 1) *
                                           self.para_dim].reshape(-1)
 
-    def batch_prediction(self, inputs, batch_size=float('inf')):
+    def omega_prediction(self, inputs):
         # batch_size = len(inputs)
         states = inputs[:, :self.state_dim]
         actions = inputs[:, self.state_dim]
@@ -1034,7 +1266,6 @@ class StateActionVisitationRatioExpoLinear():
                                 for f, s in zip(self.bspline, S)
                             ],
                                      repeat=1)))))  # ((L-d)^S_dim, n)
-                output *= self.basis_scale_factor  #
             else:
                 output = np.concatenate([
                     np.array([func(s) for func in f])
@@ -1127,6 +1358,8 @@ class StateActionVisitationRatioExpoLinear():
         self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer,
                                                          step_size=100,
                                                          gamma=0.99)
+        inverse_wts = 1 / np.clip(a=1 - self.replay_buffer.dropout_prob, a_min=prob_lbound, a_max=1).astype(float)
+        self.total_T_ipw = sum(inverse_wts)
 
         wait_count = 0
         min_loss = 10
@@ -1134,20 +1367,42 @@ class StateActionVisitationRatioExpoLinear():
 
         self.omega_model.train()
 
+        initial_states = self.initial_state_sampler.initial_states
+        l2 = (1 - self.gamma) * torch.mean(torch.Tensor(self._U(S=initial_states, policy=self.target_policy.policy_func)), dim=0)
+
         for i in range(max_iter):
+            state = self.replay_buffer.states
+            action = self.replay_buffer.actions
+            state = self.scaler.transform(state)
+            inputs = torch.Tensor(self._Xi(S=state, A=action))
+            # print('inputs', inputs.max(dim=1))
+            omega = self.omega_model(inputs)
+            self.mean_omega = torch.mean(omega)
+
             transitions = self.replay_buffer.sample(batch_size)
             state, action, next_state, dropout_prob = transitions[
                 0], transitions[1], transitions[3], transitions[4]
-            state2 = self.initial_state_sampler.sample(batch_size)
+            # state2 = self.initial_state_sampler.sample(batch_size)
+            if not ipw:
+                dropout_prob = np.zeros_like(action)
+            inverse_wts = 1 / np.clip(
+                a=1 - dropout_prob, a_min=prob_lbound, a_max=1).astype(float)
+            inverse_wts = torch.FloatTensor(inverse_wts).reshape(-1,1)
+            total_T_ipw = sum(inverse_wts)
 
             inputs = torch.Tensor(self._Xi(S=state, A=action))
             omega = self.omega_model(inputs)
-            omega = omega / torch.mean(omega)
+            # omega = omega / torch.mean(omega)
+            omega = omega / self.mean_omega
             pseudo_resid = torch.Tensor(self.gamma * self._U(S=next_state, policy=self.target_policy.policy_func) - self._Xi(S=state, A=action))
 
-            l1 = torch.mean(omega * pseudo_resid, dim=0)
-            l2 = (1 - self.gamma) * torch.mean(torch.Tensor(self._U(S=state2, policy=self.target_policy.policy_func)), dim=0)
+            l1 = torch.mean(inverse_wts * omega * pseudo_resid, dim=0)
+            # l1 = torch.sum(inverse_wts * omega * pseudo_resid, dim=0) / total_T_ipw
+            # l2 = (1 - self.gamma) * torch.mean(torch.Tensor(self._U(S=state2, policy=self.target_policy.policy_func)), dim=0)
             loss = torch.dot(l1 + l2, l1 + l2)
+            # delta = 0.1
+            # loss_sq = torch.dot(l1 + l2, l1 + l2)
+            # loss = torch.sum(1 / (1 + torch.exp(- 5 * (loss_sq - delta))))
 
             self.optimizer.zero_grad()
             loss.backward()
@@ -1176,11 +1431,12 @@ class StateActionVisitationRatioExpoLinear():
                 print('wait_count reaches patience, stop training')
                 break
 
-    def batch_prediction(self, inputs, batch_size=float('inf')):
+    def omega_prediction(self, inputs):
         self.omega_model.eval()
         # batch_size = len(inputs)
         states = inputs[:, :self.state_dim]
         actions = inputs[:, self.state_dim]
         xi_mat = self._Xi(S=states, A=actions)
         omega_hat = self.omega_model(torch.Tensor(xi_mat)).detach().numpy()
-        return omega_hat
+        mean_omega = self.mean_omega.detach().numpy() # np.mean(omega_hat)
+        return omega_hat / mean_omega # normalize

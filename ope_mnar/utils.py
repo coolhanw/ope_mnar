@@ -40,6 +40,22 @@ def constant_fn(val):
 
     return func
 
+def constant_vec_fn(val, output_dim):
+    """Create a function that returns a constant.
+    
+    Args:
+        val (float): the constant value of the returned function
+        ouput_dim (int): the number of outputs
+    
+    Returns:
+        callable
+    """
+
+    def func(*args, **kwargs):
+        return np.repeat(val, output_dim)
+
+    return func
+
 
 class normcdf():
     """Transform the state using normal CDF."""
@@ -776,7 +792,6 @@ class VectorSimEnv(VectorEnv):
         self.dim = dim
         self.T = T  # max length of trajectory
         self._np_random = np.random
-        self.last_obs = None
         self.low = low
         self.high = high
 
@@ -821,14 +836,8 @@ class VectorSimEnv(VectorEnv):
                                              axis=1)  # (num_env,1,dim)
         self.states_history_mask = self.state_mask  # (num_env,1)
 
-        self.last_obs = self.observations
-
-    def reset_wait(self, timeout=None):
-        """
-        Args:
-		    timeout (int or float, optional): the number of seconds before the call to reset_wait times out. If
-			None, the call to reset_wait never times out.
-		
+    def reset_wait(self):
+        """		
         Returns:
             observations (sample from observation_space): a batch of observations from the vectorized environment.
 		"""
@@ -870,28 +879,30 @@ class VectorSimEnv(VectorEnv):
         else:
             self.actions_history = np.concatenate(
                 [self.actions_history, actions_arr], axis=1)
+        # next state
         S_next = self.state_trans_model(obs=self.observations,
                                         action=actions_arr,
                                         rng=self._np_random)  # (num_envs,dim)
-        # clip state
         S_next = np.clip(a=S_next, a_min=self.low, a_max=self.high)
         if len(S_next.shape) == 1:
             S_next = S_next.reshape(1, -1)
+        # reward
         reward = self.reward_model(obs=self.observations,
                                    action=actions_arr,
                                    next_obs=S_next,
                                    rng=self._np_random)  # (num_envs,1)
-        if self.count < self.T:
+        if self.count <= self.T: # <= instead of <
             self.states_history = np.concatenate(
                 [self.states_history,
                  np.expand_dims(a=S_next, axis=1)],
                 axis=1)
+
         if self.rewards_history is None:
             self.rewards_history = reward
         else:
             self.rewards_history = np.concatenate(
                 [self.rewards_history, reward], axis=1)
-
+        # dropout_prob
         if self.rewards_history.shape[1] < 2:
             self.dropout_prob = self.dropout_model(
                 obs_history=self.states_history,
@@ -914,20 +925,17 @@ class VectorSimEnv(VectorEnv):
         self.next_state_mask = np.minimum(
             self.state_mask,
             1 - self.dropout_next)  # (num_envs,1), element-wise minimum
-        if self.count < self.T:
+
+        if self.count <= self.T: # <= instead of <
             self.states_history_mask = np.concatenate(
                 [self.states_history_mask, self.next_state_mask],
-                axis=1)  # (num_envs,1)
+                axis=1)
         self.state_mask = self.next_state_mask
         self.observations = S_next
-        self.last_obs = self.observations
+        self.rewards = reward
 
-    def step_wait(self, timeout=None):
-        """
-		Args:
-		    timeout (int or float, optional): number of seconds before the call to step_wait times out. If
-			None, the call to step_wait never times out.
-		
+    def step_wait(self):
+        """		
 		Returns:
 		    observations (sample from observation_space): a batch of observations from the vectorized environment.
 		    rewards (np.ndarray): a vector of rewards from the vectorized environment.
@@ -953,9 +961,18 @@ class VectorSimEnv(VectorEnv):
             self.state_mask.copy()  # 1 indicates observed, 0 otherwise
         }
 
-        return self.observations.copy(), self.rewards_history[:, -1].reshape(
-            -1, 1).copy(), dones.copy(
+        return self.observations.copy(), self.rewards.reshape(-1, 1).copy(), dones.copy(
             ), env_infos  # create a copy to aviod mutating values
+
+    def step(self, actions):
+        """Take an action for each parallel environment.
+        Args:
+            actions: element of :attr:`action_space` Batch of actions.
+        Returns:
+            Batch of (observations, rewards, terminated, truncated, infos) or (observations, rewards, dones, infos)
+        """
+        self.step_async(actions)
+        return self.step_wait()
 
     def close_extras(self, **kwargs):
         r"""Clean up the extra resources e.g. beyond what's in this base class. """
@@ -1272,20 +1289,22 @@ class InitialStateSampler():
             return self.sampling_distribution(size=batch_size)
 
 class SimpleReplayBuffer():
-    def __init__(self, trajs, seed=0):
+    def __init__(self, trajs, max_T, prop_info=None, seed=0):
         """
         Args:
-            # trajs (list): a list of trajs, each traj is a list of tuple (S, A, R, S')
             trajs (dict): mapping from index to trajectory (list)
+            prop_info (dict): mapping from index to trajectory associated dropout propensity
         """
 
         self.num_trajs = len(trajs)
+        self.max_T = max_T
         self.states, self.actions, self.rewards, self.next_states = [], [], [], []
         self.initial_states, self.initial_actions, self.initial_rewards = [], [], []
         self.dropout_prob = []
         self.time_index = []
+        self.use_pred_prop = True if prop_info is not None else False
         
-        for traj in trajs.values():
+        for i, traj in trajs.items():
             states = traj[0]
             num_transitions = len(states) - 1
             
@@ -1293,8 +1312,14 @@ class SimpleReplayBuffer():
             self.actions.append(traj[1][:num_transitions])
             self.rewards.append(traj[2][:num_transitions])
             self.next_states.append(traj[0][1:])
-            self.dropout_prob.append(traj[6][:num_transitions])
             self.time_index.append(list(range(num_transitions)))
+
+            if self.use_pred_prop:
+                self.dropout_prob.append(prop_info[i][0][:num_transitions])
+            elif traj[6] is not None:
+                self.dropout_prob.append(traj[6][:num_transitions])
+            else:
+                self.dropout_prob.append(np.zeros_like(traj[1][:num_transitions], dtype=float)) # no dropout
 
             self.initial_states.append(traj[0][0])
             self.initial_actions.append(traj[1][0])

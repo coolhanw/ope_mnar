@@ -117,9 +117,7 @@ def train_Q_func(
 
     spline_degree = d
     if not L:
-        L = int(np.sqrt(
-            (agent.total_N)
-            **(3 / 7))) if knots is None else len(knots) - 1 - spline_degree
+        L = max(4, int(((agent.total_N)**(3 / 7))**(1 / env.state_dim))) if knots is None else len(knots) - 1 - spline_degree
 
     config_str = f'configuraion: T = {T}, n = {n}, discount = {discount}, L = {L}, ipw = {ipw}, aipw = False, estimate_missing_prob = {estimate_missing_prob}'
     print(config_str)

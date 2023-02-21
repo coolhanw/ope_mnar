@@ -133,12 +133,10 @@ class SimulationBase(object):
             observations_traj (np.ndarray)
             action_traj (np.ndarray)
             reward_traj (np.ndarray)
-            T (int): length of the trajectory
+            traj_len (int): length of the trajectory
             survival_prob_traj (np.ndarray)
             dropout_next_traj (np.ndarray)
             dropout_prob_traj (np.ndarray)
-
-        TODO: organize the output into a dictionary
         """
         if policy is None:
             policy = self.obs_policy if self.obs_policy is not None else lambda S: self.env.action_space.sample(
@@ -190,31 +188,35 @@ class SimulationBase(object):
             if dropout_next:
                 break
             step += 1
-        T = len(reward_traj)
+        traj_len = len(reward_traj)
         # convert to numpy.ndarray
-        S_traj = np.array(S_traj)[:T]
+        if traj_len == max_T and not dropout_next:
+            S_traj = np.array(S_traj)
+        else:
+            S_traj = np.array(S_traj)[:traj_len]
         A_traj = np.array(A_traj)
         reward_traj = np.array(reward_traj)
         survival_prob_traj = np.array(survival_prob_traj).reshape(-1)
         dropout_next_traj = np.array(dropout_next_traj).reshape(-1)
         dropout_prob_traj = np.array(dropout_prob_traj).reshape(-1)
+        
         if burn_in is None:
             return [
                 S_traj, 
                 A_traj, 
                 reward_traj, 
-                T, 
+                traj_len, 
                 survival_prob_traj,
                 dropout_next_traj, 
                 dropout_prob_traj
             ]
         else:
-            if T > burn_in:
+            if traj_len > burn_in:
                 return [
                     S_traj[burn_in:], 
                     A_traj[burn_in:], 
                     reward_traj[burn_in:],
-                    T - burn_in, 
+                    traj_len - burn_in, 
                     survival_prob_traj[burn_in:],
                     dropout_next_traj[burn_in:], 
                     dropout_prob_traj[burn_in:]
@@ -2227,33 +2229,38 @@ class SimulationBase(object):
         self.idx2states_target = collections.defaultdict(list)
 
         init_states = self._initial_obs
-        old_num_envs = self.eval_env.num_envs
         eval_size = len(init_states)
+        if self.eval_env.is_vector_env:
+            old_num_envs = self.eval_env.num_envs
+            self.eval_env.num_envs = eval_size
+            self.eval_env.observation_space = batch_space(
+                self.eval_env.single_observation_space,
+                n=self.eval_env.num_envs)
+            self.eval_env.action_space = Tuple(
+                (self.eval_env.single_action_space, ) * self.eval_env.num_envs)
 
-        self.eval_env.num_envs = eval_size
-        self.eval_env.observation_space = batch_space(
-            self.eval_env.single_observation_space,
-            n=self.eval_env.num_envs)
-        self.eval_env.action_space = Tuple(
-            (self.eval_env.single_action_space, ) * self.eval_env.num_envs)
-
-        trajectories = self.gen_batch_trajs(
-            policy=self.target_policy.policy_func,
-            seed=None,
-            S_inits=init_states,
-            evaluation=True)
-        states_target, actions_target, rewards_target = trajectories[:3]
-        time_idxs_target = np.tile(np.arange(self.eval_env.T), reps=len(states_target))
-        states_target = np.vstack(states_target)
-        actions_target = actions_target.flatten()
-        print('empirical value:', np.mean(rewards_target) / (1 - self.gamma))
-        # recover eval_env
-        self.eval_env.num_envs = old_num_envs
-        self.eval_env.observation_space = batch_space(
-            self.eval_env.single_observation_space,
-            n=self.eval_env.num_envs)
-        self.eval_env.action_space = Tuple(
-            (self.eval_env.single_action_space, ) * self.eval_env.num_envs)
+            trajectories = self.gen_batch_trajs(
+                policy=self.target_policy.policy_func,
+                seed=self.seed,
+                S_inits=init_states,
+                evaluation=True)
+            states_target, actions_target, rewards_target = trajectories[:3]
+            states_target = [s_traj[:len(a_traj)] for s_traj,a_traj in zip(states_target, actions_target)]
+            time_idxs_target = np.tile(np.arange(self.eval_env.T), reps=len(states_target))
+            assert len(states_target[0]) == len(actions_target[0]) == self.eval_env.T
+            states_target = np.vstack(states_target)
+            actions_target = actions_target.flatten()
+            # print('empirical value:', np.mean(rewards_target) / (1 - self.gamma))
+            
+            # recover eval_env
+            self.eval_env.num_envs = old_num_envs
+            self.eval_env.observation_space = batch_space(
+                self.eval_env.single_observation_space,
+                n=self.eval_env.num_envs)
+            self.eval_env.action_space = Tuple(
+                (self.eval_env.single_action_space, ) * self.eval_env.num_envs)
+        else:
+            raise NotImplementedError
 
         discretized_states_target = np.zeros_like(states_target)
         for i in range(self.state_dim):
@@ -2270,15 +2277,15 @@ class SimulationBase(object):
             v = np.array(v)
             freq_mat[0][k[0]][k[1]] = sum(v[:,self.state_dim] == 0) / len(states)
             freq_mat[1][k[0]][k[1]] = sum(v[:,self.state_dim] == 1) / len(states)
-            visit_ratio_mat[0][k[0]][k[1]] = np.mean(v[v[:,self.state_dim] == 0,self.state_dim+1])
-            visit_ratio_mat[1][k[0]][k[1]] = np.mean(v[v[:,self.state_dim] == 1,self.state_dim+1])
+            visit_ratio_mat[0][k[0]][k[1]] = np.mean(v[v[:,self.state_dim] == 0,self.state_dim+1]) if sum(v[:,self.state_dim] == 0) > 0 else 0
+            visit_ratio_mat[1][k[0]][k[1]] = np.mean(v[v[:,self.state_dim] == 1,self.state_dim+1]) if sum(v[:,self.state_dim] == 1) > 0 else 0
 
         freq_target_mat = np.zeros(shape=(self.num_actions, grid_size, grid_size))
         visit_ratio_ref_mat = np.zeros(shape=(self.num_actions, grid_size, grid_size))
         for k, v in self.idx2states_target.items():
             v = np.array(v)
-            freq_target_mat[0][k[0]][k[1]] = (1-self.gamma) * sum(self.gamma ** v[v[:,self.state_dim] == 0, self.state_dim+1]) / eval_size
-            freq_target_mat[1][k[0]][k[1]] = (1-self.gamma) * sum(self.gamma ** v[v[:,self.state_dim] == 1, self.state_dim+1]) / eval_size
+            freq_target_mat[0][k[0]][k[1]] = (1 - self.gamma) * sum(self.gamma ** v[v[:,self.state_dim] == 0, self.state_dim+1]) / eval_size
+            freq_target_mat[1][k[0]][k[1]] = (1 - self.gamma) * sum(self.gamma ** v[v[:,self.state_dim] == 1, self.state_dim+1]) / eval_size
             # freq_target_mat[1][k[0]][k[1]] = sum(v[:,self.state_dim] == 0) / len(states_target)
             # freq_target_mat[1][k[0]][k[1]] = sum(v[:,self.state_dim] == 1) / len(states_target)
             visit_ratio_ref_mat[0][k[0]][k[1]] = freq_target_mat[0][k[0]][k[1]] / max(freq_mat[0][k[0]][k[1]], 0.0001)
@@ -2288,44 +2295,76 @@ class SimulationBase(object):
 
             fig, ax = plt.subplots(2, self.num_actions, figsize=(5*self.num_actions,8))
             for a in range(self.num_actions):
+                # sns.heatmap(
+                #     freq_mat[a], 
+                #     cmap="YlGnBu",
+                #     linewidth=1,
+                #     ax=ax[0,a]
+                # )
+                # ax[0,a].invert_yaxis()
+                # ax[0,a].set_title(f'discretized state visitation of pi_b (action={a})')
                 sns.heatmap(
                     freq_mat[a], 
                     cmap="YlGnBu",
                     linewidth=1,
-                    ax=ax[0,a]
+                    ax=ax[a,1]
                 )
-                ax[0,a].invert_yaxis()
-                ax[0,a].set_title(f'discretized state visitation of pi_b (action={a})')
+                ax[a,1].invert_yaxis()
+                ax[a,1].set_title(f'discretized state visitation of pi_b (action={a})')
             for a in range(self.num_actions):
+                # sns.heatmap(
+                #     freq_target_mat[a], 
+                #     cmap="YlGnBu",
+                #     linewidth=1,
+                #     ax=ax[1,a]
+                # )
+                # ax[1,a].invert_yaxis()
+                # ax[1,a].set_title(f'discretized state visitation of pi (action={a})')
                 sns.heatmap(
                     freq_target_mat[a], 
                     cmap="YlGnBu",
                     linewidth=1,
-                    ax=ax[1,a]
+                    ax=ax[a,0]
                 )
-                ax[1,a].invert_yaxis()
-                ax[1,a].set_title(f'discretized state visitation of pi (action={a})')
+                ax[a,0].invert_yaxis()
+                ax[a,0].set_title(f'discretized state visitation of pi (action={a})')
             plt.savefig('./output/visitation_heatplot.png')
 
             fig, ax = plt.subplots(2, self.num_actions, figsize=(5*self.num_actions,8))
             for a in range(self.num_actions):
+                # sns.heatmap(
+                #     visit_ratio_mat[a], 
+                #     cmap="YlGnBu",
+                #     linewidth=1,
+                #     ax=ax[0,a]
+                # )
+                # ax[0,a].invert_yaxis()
+                # ax[0,a].set_title(f'est visitation ratio (action={a})')
                 sns.heatmap(
                     visit_ratio_mat[a], 
                     cmap="YlGnBu",
                     linewidth=1,
-                    ax=ax[0,a]
+                    ax=ax[a,1]
                 )
-                ax[0,a].invert_yaxis()
-                ax[0,a].set_title(f'est visitation ratio (action={a})')
+                ax[a,1].invert_yaxis()
+                ax[a,1].set_title(f'est visitation ratio (action={a})')
             for a in range(self.num_actions):
+                # sns.heatmap(
+                #     visit_ratio_ref_mat[a], 
+                #     cmap="YlGnBu",
+                #     linewidth=1,
+                #     ax=ax[1,a]
+                # )
+                # ax[1,a].invert_yaxis()
+                # ax[1,a].set_title(f'empirical visitation ratio (action={a})')
                 sns.heatmap(
                     visit_ratio_ref_mat[a], 
                     cmap="YlGnBu",
                     linewidth=1,
-                    ax=ax[1,a]
+                    ax=ax[a,0]
                 )
-                ax[1,a].invert_yaxis()
-                ax[1,a].set_title(f'empirical visitation ratio (action={a})')
+                ax[a,0].invert_yaxis()
+                ax[a,0].set_title(f'empirical visitation ratio (action={a})')
             plt.savefig(f'./output/est_visitation_ratio_heatplot.png')
             plt.close()
 
@@ -2351,7 +2390,7 @@ class SimulationBase(object):
 
         trajectories = self.gen_batch_trajs(
             policy=self.target_policy.policy_func,
-            seed=None,
+            seed=self.seed,
             S_inits=init_states,
             A_inits=init_actions,
             burn_in=0,
@@ -2399,21 +2438,37 @@ class SimulationBase(object):
 
             fig, ax = plt.subplots(2, self.num_actions, figsize=(5*self.num_actions,8))
             for a in range(self.num_actions):
+                # sns.heatmap(
+                #     Q_mat[a], 
+                #     cmap="YlGnBu",
+                #     linewidth=1,
+                #     ax=ax[0,a]
+                # )
+                # ax[0,a].invert_yaxis()
+                # ax[0,a].set_title(f'estimated Q (action={a})')
                 sns.heatmap(
                     Q_mat[a], 
                     cmap="YlGnBu",
                     linewidth=1,
-                    ax=ax[0,a]
+                    ax=ax[a,1]
                 )
-                ax[0,a].invert_yaxis()
-                ax[0,a].set_title(f'estimated Q (action={a})')
+                ax[a,1].invert_yaxis()
+                ax[a,1].set_title(f'estimated Q (action={a})')
             for a in range(self.num_actions):
+                # sns.heatmap(
+                #     Q_ref_mat[a], 
+                #     cmap="YlGnBu",
+                #     linewidth=1,
+                #     ax=ax[1,a]
+                # )
+                # ax[1,a].invert_yaxis()
+                # ax[1,a].set_title(f'empirical Q (action={a})')
                 sns.heatmap(
                     Q_ref_mat[a], 
                     cmap="YlGnBu",
                     linewidth=1,
-                    ax=ax[1,a]
+                    ax=ax[a,0]
                 )
-                ax[1,a].invert_yaxis()
-                ax[1,a].set_title(f'empirical Q (action={a})')
+                ax[a,0].invert_yaxis()
+                ax[a,0].set_title(f'empirical Q (action={a})')
             plt.savefig(f'./output/Qfunc_heatplot.png')

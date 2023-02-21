@@ -93,10 +93,10 @@ if __name__ == '__main__':
 
     log_suffix = args.log_suffix
     prob_lbound = 1e-2  # 1e-2, 1e-3
-    gamma_true = None  # 1.5
+    psi_true = None  # 1.5
     if missing_mechanism and missing_mechanism.lower() == 'mnar':
-        plugin_gamma_true = False
-        initialize_with_gammaT = True
+        plugin_psi_true = False
+        initialize_with_psiT = True
     if not ipw:
         estimator = 'cc'
     elif not estimate_missing_prob:
@@ -106,15 +106,21 @@ if __name__ == '__main__':
 
     eval_policy_mc_size = args.eval_policy_mc_size  # 10000
     eval_horizon = args.eval_horizon  # 500
-    initial_scenario_list = ['C']  # ['A', 'C', 'E']
+    initial_scenario_list = ['C']
     scale = default_scaler
     eval_seed = 123
     product_tensor = True
     spline_degree = 3
-    if adaptive_dof:
-        dof = max(4, int(np.sqrt((n * T)**(3 / 7))))  # degree of freedom
-    else:
-        dof = 7
+    if env_class == 'linear2d':
+        if adaptive_dof:
+            dof = max(4, int(((n * T)**(3/7))**(1/2)))  # degree of freedom
+        else:
+            dof = 7
+    elif env_class == 'cartpole':
+        if adaptive_dof:
+            dof = max(4, int(((n * T)**(3/7))**(1/4))) # degree of freedom
+        else:
+            dof = 4
     ridge_factor = 1e-3  # 1e-9
     folder_suffix = '' # '_unscaled'
     folder_suffix += f'_missing{dropout_rate}'
@@ -271,7 +277,7 @@ if __name__ == '__main__':
             missing_mechanism=missing_mechanism,
             instrument_var_index=instrument_var_index,
             mnar_y_transform=mnar_y_transform,
-            gamma_init=None if missing_mechanism == 'mnar' and not initialize_with_gammaT else gamma_true,
+            psi_init=None if missing_mechanism == 'mnar' and not initialize_with_psiT else psi_true,
             bandwidth_factor=bandwidth_factor,
             value_import_dir=os.path.join(
                 log_dir, f'{env_class}_value_coverage{folder_suffix}'),
@@ -297,7 +303,7 @@ if __name__ == '__main__':
         true_value_int = est_value_dict['true_V_int']
         est_V_mse = est_value_dict['est_V_mse_list']
         max_inverse_wt_list = est_value_dict['max_inverse_wt_list']
-        mnar_gamma_est_list = est_value_dict['mnar_gamma_est_list']
+        mnar_psi_est_list = est_value_dict['mnar_psi_est_list']
         dropout_prob_mse_list = est_value_dict['dropout_prob_mse_list']
         for initial_scenario in initial_scenario_list:
             nrows, ncols = 1, 2
@@ -376,8 +382,8 @@ if __name__ == '__main__':
             missing_mechanism=missing_mechanism,
             instrument_var_index=instrument_var_index,
             mnar_y_transform=mnar_y_transform,
-            gamma_init=None if missing_mechanism == 'mnar'
-            and not initialize_with_gammaT else gamma_true,
+            psi_init=None if missing_mechanism == 'mnar'
+            and not initialize_with_psiT else psi_true,
             bandwidth_factor=bandwidth_factor,
             value_import_dir=os.path.join(
                 log_dir, f'{env_class}_value_coverage{folder_suffix}'),
@@ -404,7 +410,7 @@ if __name__ == '__main__':
         true_value_int = est_value_dict['true_V_int']
         est_V_mse = est_value_dict['est_V_mse_list']
         max_inverse_wt_list = est_value_dict['max_inverse_wt_list']
-        mnar_gamma_est_list = est_value_dict['mnar_gamma_est_list']
+        mnar_psi_est_list = est_value_dict['mnar_psi_est_list']
         dropout_prob_mse_list = est_value_dict['dropout_prob_mse_list']
         # histograms to visualize V_int estimation
         for initial_scenario in initial_scenario_list:
@@ -450,19 +456,19 @@ if __name__ == '__main__':
                 plt.close()
 
     if ipw and estimate_missing_prob and missing_mechanism == 'mnar':
-        mnar_gamma_est_list = np.hstack(mnar_gamma_est_list)
+        mnar_psi_est_list = np.hstack(mnar_psi_est_list)
         nrows, ncols = 1, 2
         fig, ax = plt.subplots(nrows=nrows,
                                ncols=ncols,
                                figsize=(4 * ncols, 4 * nrows))
-        sns.histplot(data=mnar_gamma_est_list, stat='probability', ax=ax[0])
+        sns.histplot(data=mnar_psi_est_list, stat='probability', ax=ax[0])
         ax[0].axvline(1.5, color='red')
-        ax[0].set_title(f'gamma est')
+        ax[0].set_title(f'psi est')
         sns.histplot(data=dropout_prob_mse_list, stat='probability', ax=ax[1])
         ax[1].set_title(f'prob est mse')
         plt.savefig(
             os.path.join(
                 export_dir,
-                f"mnar_est_gamma_T_{T}_n_{n}_L_{dof}_gamma{gamma}_dropout{dropout_scheme}_{estimator}.png"
+                f"mnar_est_psi_T_{T}_n_{n}_L_{dof}_gamma{gamma}_dropout{dropout_scheme}_{estimator}.png"
             ))
         plt.close()

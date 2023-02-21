@@ -61,6 +61,7 @@ class MWL(SimulationBase):
                        batch_size=32,
                        lr=0.0002,
                        ipw=False,
+                       estimate_missing_prob=True,
                        prob_lbound=1e-3,
                        scaler=None,
                        print_freq=20,
@@ -68,7 +69,15 @@ class MWL(SimulationBase):
                        verbose=False,
                        **kwargs):
 
-        self.replay_buffer = SimpleReplayBuffer(trajs=self.masked_buffer,
+        if not estimate_missing_prob:
+            self.replay_buffer = SimpleReplayBuffer(trajs=self.masked_buffer, max_T=self.max_T - self.burn_in, 
+                                                seed=self.seed)
+        else:
+            assert hasattr(
+                self, 'propensity_pred'
+            ), 'please call function self.estimate_missing_prob() first'
+            self.replay_buffer = SimpleReplayBuffer(trajs=self.masked_buffer, max_T=self.max_T - self.burn_in, 
+                                                prop_info=self.propensity_pred,
                                                 seed=self.seed)
 
         self.target_policy = target_policy
@@ -94,6 +103,7 @@ class MWL(SimulationBase):
                 action_dim=action_dim,
                 separate_action=self.separate_action,
                 lr=lr,
+                scaler=scaler,
                 device=self.device)
 
             omega_func.fit(
@@ -106,6 +116,26 @@ class MWL(SimulationBase):
                 patience=patience,
                 # rep_loss=rep_loss
             )
+            # omega_func = StateActionVisitationRatio(
+            #     replay_buffer=self.replay_buffer,
+            #     initial_state_sampler=initial_state_sampler,
+            #     discount=self.gamma,
+            #     hidden_sizes=hidden_sizes,
+            #     num_actions=self.num_actions,
+            #     # q_lr=1e-3,
+            #     # omega_lr=1e-3,
+            #     scaler=scaler,
+            #     device=self.device,
+            #     **kwargs
+            # )
+            # omega_func.fit(
+            #     target_policy=target_policy,
+            #     batch_size=batch_size,
+            #     max_iter=max_iter,
+            #     ipw=ipw,
+            #     prob_lbound=prob_lbound,
+            #     print_freq=print_freq,
+            # )
             self.omega_func = omega_func
             # self.omega_model = omega_func.model
         elif self.func_class == 'spline':
@@ -113,12 +143,12 @@ class MWL(SimulationBase):
                 replay_buffer=self.replay_buffer,
                 initial_state_sampler=initial_state_sampler,
                 discount=self.gamma,
-                scaler=self.scaler,
+                scaler=scaler,
                 num_actions=self.num_actions)
 
             omega_func.fit(target_policy=target_policy,
-                           ipw=False,
-                           prob_lbound=1e-3,
+                           ipw=ipw,
+                           prob_lbound=prob_lbound,
                            **kwargs)
 
             self.omega_func = omega_func
@@ -127,12 +157,12 @@ class MWL(SimulationBase):
                 replay_buffer=self.replay_buffer,
                 initial_state_sampler=initial_state_sampler,
                 discount=self.gamma,
-                scaler=self.scaler,
+                scaler=scaler,
                 num_actions=self.num_actions)
 
             omega_func.fit(target_policy=target_policy,
-                           ipw=False,
-                           prob_lbound=1e-3,
+                           ipw=ipw,
+                           prob_lbound=prob_lbound,
                            batch_size=batch_size,
                            max_iter=max_iter,
                            lr=lr,
@@ -146,8 +176,7 @@ class MWL(SimulationBase):
 
     def omega(self, states: np.ndarray, actions: np.ndarray) -> np.ndarray:
         inputs = np.hstack([states, actions[:, np.newaxis]])
-        omega_values = self.omega_func.batch_prediction(
-            inputs=inputs, batch_size=len(states)).squeeze()
+        omega_values = self.omega_func.omega_prediction(inputs=inputs).squeeze()
         return omega_values
 
     def get_value(self):
@@ -163,8 +192,6 @@ class MWL(SimulationBase):
                                   a_min=self.prob_lbound,
                                   a_max=1).astype(float)  # (NT,)
         # next_state = self.replay_buffer.next_states
-
-        # est_omega = self.omega_func.batch_prediction(inputs=np.hstack([states, actions[:, np.newaxis]]), batch_size=len(states)).squeeze()  #  (NT,)
         est_omega = self.omega(states, actions)  #  (NT,)
 
         ## sanity check for spline
@@ -173,15 +200,18 @@ class MWL(SimulationBase):
         # V_int_IS = 1 / (1 - self.gamma) * np.matmul(mat2.T, self.omega_func.est_alpha)
 
         # est_omega = np.clip(est_omega, a_min=0, a_max=None) # clip, avoid negative values
-        est_omega = est_omega / np.mean(est_omega)  # normalize
+        # est_omega = est_omega / np.mean(est_omega)  # normalize, move it into self.omega_func class
 
         print('omega: min = ', np.min(est_omega), 'max = ', np.max(est_omega))
 
-        V_int_IS = 1 / (1 - self.gamma) * np.mean(
-            est_omega * rewards * inverse_wts)
+        if self.func_class == 'spline':
+            V_int_IS = 1 / (1 - self.gamma) * np.sum(
+                est_omega * rewards * inverse_wts) / self.omega_func.total_T_ipw
+        else:
+            V_int_IS = 1 / (1 - self.gamma) * np.mean(est_omega * rewards * inverse_wts)
 
         if self.verbose:
-            print("IS = {:.2f}".format(V_int_IS))
+            print("value_est_IS = {:.3f}\n".format(V_int_IS))
 
         return V_int_IS
 
@@ -232,6 +262,9 @@ class NeuralDualDice(SimulationBase):
         zeta_learning_rate,
         zeta_pos: bool = False,
         solve_for_state_action_ratio: bool = True,
+        ipw: bool = False,
+        estimate_missing_prob: bool = True,
+        prob_lbound: float = 1e-3,
         max_iter: int = 10000,
         batch_size: int = 1024,
         f_exponent: float = 2,
@@ -275,8 +308,15 @@ class NeuralDualDice(SimulationBase):
         verbose: bool
             Whether to output intermediate results
         """
-
-        self.replay_buffer = SimpleReplayBuffer(trajs=self.masked_buffer,
+        if not estimate_missing_prob:
+            self.replay_buffer = SimpleReplayBuffer(trajs=self.masked_buffer, max_T=self.max_T - self.burn_in, 
+                                                seed=self.seed)
+        else:
+            assert hasattr(
+                self, 'propensity_pred'
+            ), 'please call function self.estimate_missing_prob() first'
+            self.replay_buffer = SimpleReplayBuffer(trajs=self.masked_buffer, max_T=self.max_T - self.burn_in, 
+                                                prop_info=self.propensity_pred,
                                                 seed=self.seed)
 
         self.verbose = verbose
@@ -287,6 +327,8 @@ class NeuralDualDice(SimulationBase):
             raise NotImplementedError
         self._categorical_action = True  # currently only handles discrete action space
         self._primal_form = primal_form
+        self.ipw = ipw
+        self.prob_lbound = prob_lbound
 
         self._nu_network = QNetwork(input_dim=self.state_dim,
                                     output_dim=self.num_actions,
@@ -354,7 +396,7 @@ class NeuralDualDice(SimulationBase):
         action_weights = torch.Tensor(action_weights).to(self.device)
         return torch.sum(network(states) * action_weights, dim=1, keepdim=True)
 
-    def _train_loss(self, states, actions, next_states, initial_states):
+    def _train_loss(self, states, actions, next_states, initial_states, weights=None):
         """
         Parameters
         ----------
@@ -362,6 +404,7 @@ class NeuralDualDice(SimulationBase):
         actions: torch.LongTensor, dim=(n,1)
         next_states: torch.FloatTensor, dim=(n,state_dim)
         initial_states: torch.FloatTensor, dim=(n,state_dim)
+        weights: torch.FloatTensor, dim=(n,1)
         """
         nu_values = self._nu_network(states).gather(dim=1, index=actions)
         initial_nu_values = self._get_average_value(self._nu_network,
@@ -372,40 +415,74 @@ class NeuralDualDice(SimulationBase):
         zeta_values = self._zeta_network(states).gather(dim=1, index=actions)
 
         bellman_residuals = nu_values - self.gamma * next_nu_values
-        zeta_loss = self._fstar_fn(
-            zeta_values) - bellman_residuals.detach() * zeta_values
-        if self._primal_form:
-            nu_loss = self._f_fn(
-                bellman_residuals) - (1 - self.gamma) * initial_nu_values
+        if not self.ipw:
+            zeta_loss = self._fstar_fn(zeta_values) - \
+                bellman_residuals.detach() * zeta_values
+            if self._primal_form:
+                nu_loss = self._f_fn(bellman_residuals) - \
+                        (1 - self.gamma) * initial_nu_values
+            else:
+                nu_loss = bellman_residuals * zeta_values.detach() - \
+                    (1 - self.gamma) * initial_nu_values
         else:
-            nu_loss = bellman_residuals * zeta_values.detach() - (
-                1 - self.gamma) * initial_nu_values
-        return torch.mean(nu_loss), torch.mean(zeta_loss)
+            zeta_loss = self._fstar_fn(zeta_values) - \
+                bellman_residuals.detach() * zeta_values
+            zeta_loss = zeta_loss * weights
+            if self._primal_form:
+                nu_loss = weights * self._f_fn(bellman_residuals) - \
+                        (1 - self.gamma) * initial_nu_values
+            else:
+                nu_loss = weights * bellman_residuals * zeta_values.detach() - \
+                    (1 - self.gamma) * initial_nu_values            
+        
+        nu_loss = torch.mean(nu_loss)
+        zeta_loss = torch.mean(zeta_loss)
+        return nu_loss, zeta_loss
 
     def _train(self, max_iter: int, batch_size: int, print_freq: int = 50):
         self._nu_network.train()
         self._zeta_network.train()
+
+        dropout_prob = self.replay_buffer.dropout_prob
+        if not self.ipw:
+            dropout_prob = np.zeros_like(self.replay_buffer.actions)
+        inverse_wts = 1 / np.clip(
+            a=1 - dropout_prob, a_min=self.prob_lbound, a_max=1).astype(float)
+        print('MaxInverseWeight:', np.max(inverse_wts))
+        print('MinInverseWeight:', np.min(inverse_wts))
 
         running_nu_losses = []
         running_zeta_losses = []
 
         for i in range(max_iter):
             transitions = self.replay_buffer.sample(batch_size)
-            states, actions, rewards, next_states = transitions[:4]
+            states, actions, rewards, next_states, dropout_prob = transitions[:5]
             initial_states = self.initial_state_sampler.sample(batch_size)
             states = self.scaler.transform(states)
             next_states = self.scaler.transform(next_states)
             initial_states = self.scaler.transform(initial_states)
             if actions.ndim == 1:
                 actions = actions.reshape(-1, 1)
+            if dropout_prob.ndim == 1:
+                dropout_prob = dropout_prob.reshape(-1, 1)
+
+            if not self.ipw:
+                dropout_prob = np.zeros_like(actions)
+            inverse_wts = 1 / np.clip(
+                a=1 - dropout_prob, a_min=self.prob_lbound, a_max=1).astype(float)
 
             states = torch.FloatTensor(states).to(self.device)
             actions = torch.LongTensor(actions).to(self.device)
             next_states = torch.FloatTensor(next_states).to(self.device)
             initial_states = torch.FloatTensor(initial_states).to(self.device)
-
-            nu_loss, zeta_loss = self._train_loss(states, actions, next_states,
-                                                  initial_states)
+            inverse_wts = torch.FloatTensor(inverse_wts).to(self.device)
+            
+            if not self.ipw:
+                nu_loss, zeta_loss = self._train_loss(states, actions, next_states,
+                                                    initial_states)
+            else:
+                nu_loss, zeta_loss = self._train_loss(states, actions, next_states,
+                                                    initial_states, inverse_wts)                
 
             # optimize nu and zeta network
             self._nu_optimizer.zero_grad()
@@ -451,13 +528,23 @@ class NeuralDualDice(SimulationBase):
         states = self.replay_buffer.states
         actions = self.replay_buffer.actions
         rewards = self.replay_buffer.rewards
+        if self.ipw:
+            dropout_prob = self.replay_buffer.dropout_prob  # (NT,)
+        else:
+            dropout_prob = np.zeros_like(actions)
+        inverse_wts = 1 / np.clip(a=1 - dropout_prob,
+                                  a_min=self.prob_lbound,
+                                  a_max=1).astype(float)
 
         est_omega = self.omega(states, actions)
         est_omega = est_omega / np.mean(est_omega)  # normalize
         print('omega: min = ', np.min(est_omega), 'max = ', np.max(est_omega))
 
-        V_int_IS = 1 / (1 - self.gamma) * np.mean(est_omega * rewards)
+        if not self.ipw:
+            V_int_IS = 1 / (1 - self.gamma) * np.mean(est_omega * rewards)
+        else:
+            V_int_IS = 1 / (1 - self.gamma) * np.mean(est_omega * rewards * inverse_wts)
         if self.verbose:
-            print("IS = {:.2f}".format(V_int_IS))
+            print("value_est_IS = {:.2f}".format(V_int_IS))
 
         return V_int_IS

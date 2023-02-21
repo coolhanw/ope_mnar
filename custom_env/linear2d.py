@@ -73,7 +73,7 @@ def dropout_model(obs_history, action_history, reward_history, T,
     intercept = 3.5  # 3
     if dropout_scheme == '0':
         return 0
-    elif dropout_scheme == '3.19' or dropout_scheme == 'mnar.v0':
+    elif dropout_scheme == 'mnar.v0':
         if T == 25:
             if dropout_rate == 0.9:
                 if dropout_obs_count_thres == 5:
@@ -108,7 +108,7 @@ def vec_dropout_model(obs_history, action_history, reward_history, T,
     intercept = 3.5  # 3
     if dropout_scheme == '0':
         prob = np.zeros(shape=obs_history.shape[0])
-    elif dropout_scheme == '3.19' or dropout_scheme == 'mnar.v0':
+    elif dropout_scheme == 'mnar.v0':
         if T == 25:
             if dropout_rate == 0.6:
                 logit = intercept + 7.0 + 0.8 * obs_history[:, -2,
@@ -185,7 +185,7 @@ def vec_dropout_model(obs_history, action_history, reward_history, T,
         else:
             raise NotImplementedError
         prob = 1 / (np.exp(logit) + 1)
-    elif dropout_scheme == '3.19-mar' or dropout_scheme == 'mar.v0':
+    elif dropout_scheme == 'mar.v0':
         if T == 25:
             if dropout_rate == 0.6:
                 logit = intercept + 4.5 + 0.8 * obs_history[:, -2,
@@ -241,7 +241,7 @@ def vec_dropout_model(obs_history, action_history, reward_history, T,
         else:
             raise NotImplementedError
         prob = 1 / (np.exp(logit) + 1)
-    elif dropout_scheme == '3.20' or dropout_scheme == 'mnar.v1':
+    elif dropout_scheme == 'mnar.v1':
         if T == 25:
             if dropout_rate == 0.6:
                 logit = intercept + 8 - 0.5 * np.power(
@@ -302,7 +302,7 @@ def vec_dropout_model(obs_history, action_history, reward_history, T,
         else:
             raise NotImplementedError
         prob = 1 / (np.exp(logit) + 1)
-    elif dropout_scheme == '3.20-mar' or dropout_scheme == 'mar.v1':
+    elif dropout_scheme == 'mar.v1':
         if T == 25:
             if dropout_rate == 0.6:
                 logit = intercept + 8 - 0.5 * np.power(
