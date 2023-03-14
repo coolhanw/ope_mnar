@@ -617,7 +617,8 @@ class SimEnv(gym.Env):
                  num_actions=2,
                  low=-np.inf,
                  high=np.inf,
-                 dtype=np.float32):
+                 dtype=np.float32,
+                 seed=0):
         """
         Args:
             state_trans_model (callable): return next state
@@ -657,7 +658,7 @@ class SimEnv(gym.Env):
         self.instrument_var_index = 1
         self.noninstrument_var_index = 0
 
-        self.seed()
+        self.seed(seed)
 
     def reset(self, S_init=None):
         """
@@ -733,8 +734,9 @@ class SimEnv(gym.Env):
         next_survival_prob = self.next_survival_prob * (1 - dropout_prob)
         self.next_survival_prob = next_survival_prob
 
-        dropout_next = 1 * (np.random.uniform(low=0, high=1) >
+        dropout_next = 1 * (self._np_random.uniform(low=0, high=1) >
                             1 - dropout_prob)
+
         if dropout_next:
             self.count = 0
 
@@ -769,7 +771,8 @@ class VectorSimEnv(VectorEnv):
                  vec_dropout_model=None,
                  low=-np.inf,
                  high=np.inf,
-                 dtype=np.float32):
+                 dtype=np.float32,
+                 seed=0):
         """
         Args:
             num_envs (int): number of environments in parallel
@@ -808,7 +811,7 @@ class VectorSimEnv(VectorEnv):
         self.instrument_var_index = 1
         self.noninstrument_var_index = 0
 
-        self.seed()
+        self.seed(seed)
 
     def reset_async(self, S_inits=None):
         self.count = 0
@@ -919,7 +922,7 @@ class VectorSimEnv(VectorEnv):
         self.survival_prob = self.next_survival_prob
         self.next_survival_prob *= 1 - self.dropout_prob
         self.dropout_next = (self.dropout_next == 1) * 1 + (
-            self.dropout_next < 1) * (self.np_random.uniform(
+            self.dropout_next < 1) * (self._np_random.uniform(
                 low=0, high=1, size=(len(self.dropout_prob), 1)) <
                                       self.dropout_prob)  # (num_envs,1)
         self.next_state_mask = np.minimum(
@@ -1300,6 +1303,7 @@ class SimpleReplayBuffer():
         self.max_T = max_T
         self.states, self.actions, self.rewards, self.next_states = [], [], [], []
         self.initial_states, self.initial_actions, self.initial_rewards = [], [], []
+        self.all_states = []
         self.dropout_prob = []
         self.time_index = []
         self.use_pred_prop = True if prop_info is not None else False
@@ -1324,6 +1328,7 @@ class SimpleReplayBuffer():
             self.initial_states.append(traj[0][0])
             self.initial_actions.append(traj[1][0])
             self.initial_rewards.append(traj[2][0])
+            self.all_states.append(traj[0])
 
         self.states = np.vstack(self.states)
         self.next_states = np.vstack(self.next_states)
@@ -1335,6 +1340,7 @@ class SimpleReplayBuffer():
         self.initial_states = np.vstack(self.initial_states)
         self.initial_actions = np.array(self.initial_actions)
         # self.initial_rewards = np.array(self.initial_rewards)
+        self.all_states = np.vstack(self.all_states)
 
         self.N, self.state_dim = self.states.shape
         self.seed = seed
@@ -1360,7 +1366,7 @@ class SimpleReplayBuffer():
         return self.initial_states[idx]
 
 
-class DiscretePolicy():
+class DiscretePolicy(object):
     def __init__(self, policy_func, num_actions):
         self.policy_func = policy_func
         self.num_actions = num_actions

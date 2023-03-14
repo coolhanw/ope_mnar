@@ -6,11 +6,36 @@ from scipy.interpolate import BSpline
 from functools import partial
 from itertools import product
 import pickle
+from scipy import linalg
 from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LinearRegression
+from typing import Any
 
 from utils import normcdf, iden, MinMaxScaler
 from batch_rl.dqn import QNetwork
 
+
+
+class Square(nn.Module):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__()
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        return torch.square(input)
+    
+class Exp(nn.Module):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__()
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        return torch.exp(input)
+    
+class Log1pexp(nn.Module):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__()
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        return torch.log(1 + 1e-6 + torch.exp(input))
 
 class StateActionVisitationModel(nn.Module):
 
@@ -56,7 +81,7 @@ class StateActionVisitationModel(nn.Module):
         inputs are concatenations of S, A, S_t, A_t = [r,r,t] (?)
         """
         out = self.layers(inputs)
-        out = torch.log(1.0001 + torch.exp(out))
+        out = torch.log(1.0001 + torch.exp(out)) # enforce positivity
         return out
 
 
@@ -876,11 +901,13 @@ class StateActionVisitationRatioSpline():
     def __init__(self,
                  replay_buffer,
                  initial_state_sampler,
+                 Q_func_class,
                  discount,
                  scaler,
                  num_actions=None):
         self.replay_buffer = replay_buffer
         self.initial_state_sampler = initial_state_sampler
+        self.Q_func_class = Q_func_class
         self.gamma = discount
         self.scaler = scaler
         self.state_dim = replay_buffer.state_dim
@@ -905,7 +932,7 @@ class StateActionVisitationRatioSpline():
         self.product_tensor = product_tensor
         self.basis_scale_factor = basis_scale_factor
 
-        obs_concat = self.replay_buffer.states
+        obs_concat = self.replay_buffer.all_states
         if not hasattr(self.scaler, 'data_min_') or not hasattr(
                 self.scaler, 'data_max_') or np.min(
                     self.scaler.data_min_) == -np.inf or np.max(
@@ -916,10 +943,15 @@ class StateActionVisitationRatioSpline():
         if isinstance(knots, str) and knots == 'equivdist':
             upper = scaled_obs_concat.max(axis=0)
             lower = scaled_obs_concat.min(axis=0)
-            knots = np.linspace(start=lower - d * (upper - lower) / (L - d),
-                                stop=upper + d * (upper - lower) / (L - d),
-                                num=L + d + 1)
-            self.knot = knots
+            # knots = np.linspace(start=lower - d * (upper - lower) / (L - d),
+            #                     stop=upper + d * (upper - lower) / (L - d),
+            #                     num=L + d + 1)
+            # self.knot = knots
+            base_knots = np.linspace(start=lower, stop=upper, num=L - d + 1)
+            left_extrapo = [lower] * d
+            right_extrapo = [upper] * d # repeated boundary knots to avoid extrapolation
+            self.knot = np.concatenate(
+                [left_extrapo, base_knots, right_extrapo])
         elif isinstance(knots, np.ndarray):
             assert len(knots) == L + d + 1
             if len(knots.shape) == 1:
@@ -931,17 +963,20 @@ class StateActionVisitationRatioSpline():
                                      axis=0)  # (L+1, state_dim)
             upper = base_knots.max(axis=0)
             lower = base_knots.min(axis=0)
-            left_extrapo = np.linspace(lower - d * (upper - lower) / (L - d),
-                                       lower,
-                                       num=d + 1)[:-1]
-            right_extrapo = np.linspace(upper,
-                                        upper + d * (upper - lower) / (L - d),
-                                        num=d + 1)[1:]
+            # left_extrapo = np.linspace(lower - d * (upper - lower) / (L - d),
+            #                         lower,
+            #                         num=d + 1)[:-1]
+            # right_extrapo = np.linspace(upper,
+            #                             upper + d * (upper - lower) / (L - d),
+            #                             num=d + 1)[1:]
+            left_extrapo = [lower] * d
+            right_extrapo = [upper] * d # repeated boundary knots to avoid extrapolation
             self.knot = np.concatenate(
                 [left_extrapo, base_knots, right_extrapo])
         else:
             raise NotImplementedError
 
+        print('B-spline knots:\n', self.knot)
         self.bspline = []
 
         self.para_dim = 1 if self.product_tensor else 0
@@ -1065,6 +1100,7 @@ class StateActionVisitationRatioSpline():
             knots=None,
             product_tensor=True,
             basis_scale_factor=1.):
+        
         self.B_spline(L=L,
                       d=d,
                       knots=knots,
@@ -1075,6 +1111,7 @@ class StateActionVisitationRatioSpline():
         states = self.replay_buffer.states
         actions = self.replay_buffer.actions
         next_states = self.replay_buffer.next_states
+        initial_states = self.initial_state_sampler.initial_states
         if ipw:
             dropout_prob = self.replay_buffer.dropout_prob
         else:
@@ -1098,24 +1135,64 @@ class StateActionVisitationRatioSpline():
         Xi_mat = self._Xi(S=states, A=actions)
         U_mat = self._U(S=next_states, policy=self.target_policy.policy_func)
 
-        # inverse_wts_mat = np.diag(v=inverse_wts.squeeze()).astype(float)
-        # mat1 = reduce(np.matmul,[(Xi_mat - self.gamma * U_mat).T, inverse_wts_mat, Xi_mat])
-        mat1 = np.matmul(
-            (Xi_mat - self.gamma * U_mat).T,
-            inverse_wts[:, np.newaxis] * Xi_mat)  # much faster computation
+        if self.Q_func_class == 'spline':
+            print('mark1')
+            # inverse_wts_mat = np.diag(v=inverse_wts.squeeze()).astype(float)
+            # mat1 = reduce(np.matmul,[(Xi_mat - self.gamma * U_mat).T, inverse_wts_mat, Xi_mat])
+            mat1 = np.matmul(
+                (Xi_mat - self.gamma * U_mat).T,
+                inverse_wts[:, np.newaxis] * Xi_mat)  # much faster computation
 
-        self.Sigma_hat = np.diag(
-            [ridge_factor] * mat1.shape[0]) + mat1 / self.total_T_ipw
-        self.Sigma_hat = self.Sigma_hat.astype(float)
-        self.inv_Sigma_hat = np.linalg.pinv(self.Sigma_hat)
+            self.Sigma_hat = np.diag(
+                [ridge_factor] * mat1.shape[0]) + mat1 / self.total_T_ipw
+            self.Sigma_hat = self.Sigma_hat.astype(float)
+            self.inv_Sigma_hat = np.linalg.pinv(self.Sigma_hat)
 
-        self.vector = np.mean(self._U(
-            S=self.initial_state_sampler.initial_states,
-            policy=self.target_policy.policy_func),
-                              axis=0).T
+            self.vector = np.mean(self._U(S=initial_states, policy=self.target_policy.policy_func), axis=0).T
 
-        self.est_alpha = (1 - self.gamma) * np.matmul(self.inv_Sigma_hat,
-                                                      self.vector)
+            self.est_alpha = (1 - self.gamma) * np.matmul(self.inv_Sigma_hat,
+                                                        self.vector)
+        elif self.Q_func_class == 'linear':
+            Q_basis = states
+            next_Q_basis = next_states
+            initial_Q_basis = initial_states
+            Q_basis_dim = Q_basis.shape[1]
+
+            actions = actions.astype(np.int8).reshape(-1)  # (n,)
+            action_mask = np.repeat(np.eye(self.num_actions)[actions],
+                                    repeats=Q_basis_dim,
+                                    axis=1)
+            zeta = np.tile(Q_basis, reps=self.num_actions) * action_mask
+            
+            next_action_probs = self.target_policy.policy_func(next_states)
+            is_stochastic = next_action_probs.shape[1] > 1
+            if not is_stochastic:
+                next_action_probs = np.eye(self.num_actions)[next_action_probs] # one-hot encoding
+            policy_mask = np.repeat(next_action_probs, repeats=Q_basis_dim, axis=1)
+            zeta_pi_next = np.tile(next_Q_basis, reps=self.num_actions) * policy_mask
+
+            initial_action_probs = self.target_policy.policy_func(initial_states)
+            is_stochastic = initial_action_probs.shape[1] > 1
+            if not is_stochastic:
+                initial_action_probs = np.eye(self.num_actions)[initial_action_probs] # one-hot encoding
+            policy_mask = np.repeat(initial_action_probs, repeats=Q_basis_dim, axis=1)
+            zeta_initial_pi = np.tile(initial_Q_basis, reps=self.num_actions) * policy_mask
+
+            mat1 = np.matmul((zeta - self.gamma * zeta_pi_next).T, inverse_wts[:, np.newaxis] * Xi_mat) / self.total_T_ipw
+            mat2 = (1 - self.gamma) * np.mean(zeta_initial_pi, axis=0).T
+            
+            # self.Sigma_hat = np.matmul(mat1.T, mat1)
+            # # self.Sigma_hat += np.diag([ridge_factor] * self.Sigma_hat.shape[0])
+            # self.Sigma_hat = self.Sigma_hat.astype(float)
+            # self.inv_Sigma_hat = np.linalg.pinv(self.Sigma_hat)
+            # self.est_alpha = np.matmul(self.inv_Sigma_hat, np.matmul(mat1.T, mat2))
+
+            omega_lm = LinearRegression(fit_intercept=False)
+            omega_lm.fit(X=mat1, y=mat2)
+            self.est_alpha = omega_lm.coef_
+
+        else:
+            raise NotImplementedError
 
         self._store_para(self.est_alpha)
 
@@ -1143,6 +1220,7 @@ class StateActionVisitationRatioExpoLinear():
     def __init__(self,
                  replay_buffer,
                  initial_state_sampler,
+                 Q_func_class,
                  discount,
                  scaler,
                  num_actions=None,
@@ -1150,6 +1228,7 @@ class StateActionVisitationRatioExpoLinear():
 
         self.replay_buffer = replay_buffer
         self.initial_state_sampler = initial_state_sampler
+        self.Q_func_class = Q_func_class
         self.gamma = discount
         self.scaler = scaler
         self.state_dim = replay_buffer.state_dim
@@ -1178,7 +1257,7 @@ class StateActionVisitationRatioExpoLinear():
         self.product_tensor = product_tensor
         self.basis_scale_factor = basis_scale_factor
 
-        obs_concat = self.replay_buffer.states
+        obs_concat = self.replay_buffer.all_states
         if not hasattr(self.scaler, 'data_min_') or not hasattr(
                 self.scaler, 'data_max_') or np.min(
                     self.scaler.data_min_) == -np.inf or np.max(
@@ -1189,10 +1268,15 @@ class StateActionVisitationRatioExpoLinear():
         if isinstance(knots, str) and knots == 'equivdist':
             upper = scaled_obs_concat.max(axis=0)
             lower = scaled_obs_concat.min(axis=0)
-            knots = np.linspace(start=lower - d * (upper - lower) / (L - d),
-                                stop=upper + d * (upper - lower) / (L - d),
-                                num=L + d + 1)
-            self.knot = knots
+            # knots = np.linspace(start=lower - d * (upper - lower) / (L - d),
+            #                     stop=upper + d * (upper - lower) / (L - d),
+            #                     num=L + d + 1)
+            # self.knot = knots
+            base_knots = np.linspace(start=lower, stop=upper, num=L - d + 1)
+            left_extrapo = [lower] * d
+            right_extrapo = [upper] * d # repeated boundary knots to avoid extrapolation
+            self.knot = np.concatenate(
+                [left_extrapo, base_knots, right_extrapo])
         elif isinstance(knots, np.ndarray):
             assert len(knots) == L + d + 1
             if len(knots.shape) == 1:
@@ -1204,18 +1288,21 @@ class StateActionVisitationRatioExpoLinear():
                                      axis=0)  # (L+1, state_dim)
             upper = base_knots.max(axis=0)
             lower = base_knots.min(axis=0)
-            left_extrapo = np.linspace(lower - d * (upper - lower) / (L - d),
-                                       lower,
-                                       num=d + 1)[:-1]
-            right_extrapo = np.linspace(upper,
-                                        upper + d * (upper - lower) / (L - d),
-                                        num=d + 1)[1:]
+            # left_extrapo = np.linspace(lower - d * (upper - lower) / (L - d),
+            #                         lower,
+            #                         num=d + 1)[:-1]
+            # right_extrapo = np.linspace(upper,
+            #                             upper + d * (upper - lower) / (L - d),
+            #                             num=d + 1)[1:]
+            left_extrapo = [lower] * d
+            right_extrapo = [upper] * d # repeated boundary knots to avoid extrapolation
             self.knot = np.concatenate(
                 [left_extrapo, base_knots, right_extrapo])
         else:
             raise NotImplementedError
 
         self.bspline = []
+        print('B-spline knots:\n', self.knot)
 
         self.para_dim = 1 if self.product_tensor else 0
         for i in range(self.state_dim):

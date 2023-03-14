@@ -368,6 +368,7 @@ class Linear2dEnv(SimEnv):
         dropout_obs_count_thres=1,
         low=-np.inf,
         high=np.inf,
+        seed=0
     ):
         if dropout_scheme == '0' or dropout_rate == 0:
             partial_vec_dropout_model = dropout_model_0
@@ -387,7 +388,8 @@ class Linear2dEnv(SimEnv):
                          dropout_model=partial_vec_dropout_model,
                          low=low,
                          high=high,
-                         dtype=np.float32)
+                         dtype=np.float32,
+                         seed=seed)
 
 
 class Linear2dVectorEnv(VectorSimEnv):
@@ -401,6 +403,7 @@ class Linear2dVectorEnv(VectorSimEnv):
         dropout_obs_count_thres=1,
         low=-np.inf,
         high=np.inf,
+        seed=0
     ):
         if dropout_scheme == '0' or dropout_rate == 0:
             partial_vec_dropout_model = vec_dropout_model_0
@@ -421,7 +424,8 @@ class Linear2dVectorEnv(VectorSimEnv):
                          vec_dropout_model=partial_vec_dropout_model,
                          low=low,
                          high=high,
-                         dtype=np.float32)
+                         dtype=np.float32,
+                         seed=seed)
 
         # self._dropout_rate = dropout_rate
         # self._dropout_scheme = dropout_scheme

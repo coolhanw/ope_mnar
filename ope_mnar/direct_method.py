@@ -24,7 +24,7 @@ from gym.vector.utils.spaces import batch_space
 import seaborn as sns
 import matplotlib.pyplot as plt
 
-from utils import normcdf, iden, MinMaxScaler, SimpleReplayBuffer
+from utils import normcdf, iden, MinMaxScaler, SimpleReplayBuffer, DiscretePolicy
 from base import SimulationBase
 from batch_rl.dqn import QNetwork
 
@@ -230,7 +230,8 @@ class LSTDQ(SimulationBase):
                  eval_env=None,
                  scale="MinMax",
                  product_tensor=True,
-                 basis_scale_factor=1.):
+                 basis_scale_factor=1.,
+                 **kwargs):
         """
         Args:
             env (gym.Env): dynamic environment
@@ -334,14 +335,20 @@ class LSTDQ(SimulationBase):
                         self.scaler.data_max_) == np.inf:
             self.scaler.fit(obs_concat)
         scaled_obs_concat = self.scaler.transform(obs_concat)
+        # print(np.quantile(a=scaled_obs_concat, q=[0.25,0.5,0.75], axis=0))
 
         if isinstance(knots, str) and knots == 'equivdist':
             upper = scaled_obs_concat.max(axis=0)
             lower = scaled_obs_concat.min(axis=0)
-            knots = np.linspace(start=lower - d * (upper - lower) / (L - d),
-                                stop=upper + d * (upper - lower) / (L - d),
-                                num=L + d + 1)
-            self.knot = knots
+            # knots = np.linspace(start=lower - d * (upper - lower) / (L - d),
+            #                     stop=upper + d * (upper - lower) / (L - d),
+            #                     num=L + d + 1)
+            # self.knot = knots
+            base_knots = np.linspace(start=lower, stop=upper, num=L - d + 1)
+            left_extrapo = [lower] * d
+            right_extrapo = [upper] * d # repeated boundary knots to avoid extrapolation
+            self.knot = np.concatenate(
+                [left_extrapo, base_knots, right_extrapo])
         elif isinstance(knots, np.ndarray):
             assert len(knots) == L + d + 1
             if len(knots.shape) == 1:
@@ -353,16 +360,20 @@ class LSTDQ(SimulationBase):
                                      axis=0)  # (L+1, state_dim)
             upper = base_knots.max(axis=0)
             lower = base_knots.min(axis=0)
-            left_extrapo = np.linspace(lower - d * (upper - lower) / (L - d),
-                                       lower,
-                                       num=d + 1)[:-1]
-            right_extrapo = np.linspace(upper,
-                                        upper + d * (upper - lower) / (L - d),
-                                        num=d + 1)[1:]
+            # left_extrapo = np.linspace(lower - d * (upper - lower) / (L - d),
+            #                            lower,
+            #                            num=d + 1)[:-1]
+            # right_extrapo = np.linspace(upper,
+            #                             upper + d * (upper - lower) / (L - d),
+            #                             num=d + 1)[1:]
+            left_extrapo = [lower] * d
+            right_extrapo = [upper] * d # repeated boundary knots to avoid extrapolation
             self.knot = np.concatenate(
                 [left_extrapo, base_knots, right_extrapo])
         else:
             raise NotImplementedError
+
+        print('B-spline knots:\n', self.knot)
 
         self.bspline = []
 
@@ -458,7 +469,7 @@ class LSTDQ(SimulationBase):
             Q_est = Q_est + np.matmul(output, self.para[a]) * (a == actions)
         return Q_est if not scaler_output else Q_est.item()
 
-    def V(self, states, policy):
+    def V(self, states, policy=None):
         """
         Return the value of states under some policy. 
 
@@ -469,6 +480,8 @@ class LSTDQ(SimulationBase):
         Returns:
             V_est (np.ndarray): array of values, dimension (n,)
         """
+        if not policy:
+            policy = self.target_policy
         states = np.array(states)
         if len(states.shape) == 1:
             states = np.expand_dims(states, axis=0)  # (n,S_dim)
@@ -719,7 +732,7 @@ class LSTDQ(SimulationBase):
         # store the estimated beta in self.para
         self._store_para(self.est_beta)
         if verbose:
-            print('Finish estimating beta!')
+            print('Done!')
 
         if verbose:
             print('Start calculating Omega...')
@@ -732,7 +745,7 @@ class LSTDQ(SimulationBase):
             proj_td.T, proj_td)  # (para_dim*num_actions, para_dim*num_actions)
         self.Omega = output / self.total_T_ipw
         if verbose:
-            print('Finish calculating Omega!')
+            print('Done!')
 
     def estimate_Q(self,
                    target_policy,
@@ -775,7 +788,8 @@ class LSTDQ(SimulationBase):
 
         self.product_tensor = product_tensor
         self.basis_scale_factor = basis_scale_factor
-        
+        if not callable(target_policy):
+            target_policy = target_policy.policy_func
         self.target_policy = target_policy
 
         self.B_spline(L=L, d=d, knots=knots)
@@ -1451,6 +1465,12 @@ class FQE(SimulationBase):
             with open(scaler, 'rb') as f:
                 self.scaler = pickle.load(f)
 
+        state = self.replay_buffer.states
+        next_state = self.replay_buffer.next_states
+        state_concat = np.vstack([state, next_state])
+        self.scaler.fit(state_concat)
+        scaled_state_concat = self.scaler.transform(state_concat)
+
         if self.Q_func_class == 'rf':
             self.Q_model = RandomForestRegressor(**kwargs,
                                                n_jobs=-1,
@@ -1466,6 +1486,49 @@ class FQE(SimulationBase):
                                          hidden_sizes=hidden_sizes,
                                          hidden_nonlinearity=nn.ReLU())
         elif self.Q_func_class == 'spline':
+            assert 'knots' in kwargs and 'L' in kwargs and 'd' in kwargs
+            knots = kwargs['knots']
+            L = kwargs['L']
+            d = kwargs['d']
+            if isinstance(knots, str) and knots == 'equivdist':
+                upper = scaled_state_concat.max(axis=0)
+                lower = scaled_state_concat.min(axis=0)
+                # knots = np.linspace(start=lower - d * (upper - lower) / (L - d),
+                #                     stop=upper + d * (upper - lower) / (L - d),
+                #                     num=L + d + 1)
+                # self.knot = knots
+                base_knots = np.linspace(start=lower, stop=upper, num=L - d + 1)
+                left_extrapo = [lower] * d
+                right_extrapo = [upper] * d # repeated boundary knots to avoid extrapolation
+                self.knot = np.concatenate(
+                    [left_extrapo, base_knots, right_extrapo])
+            elif isinstance(knots, np.ndarray):
+                assert len(knots) == L + d + 1
+                if len(knots.shape) == 1:
+                    knots = np.tile(knots.reshape(-1, 1), reps=(1, self.state_dim))
+                self.knot = knots
+            elif isinstance(knots, str) and knots == 'quantile':
+                base_knots = np.quantile(a=scaled_state_concat,
+                                        q=np.linspace(0, 1, L - d + 1),
+                                        axis=0)  # (L+1, state_dim)
+                upper = base_knots.max(axis=0)
+                lower = base_knots.min(axis=0)
+                # left_extrapo = np.linspace(lower - d * (upper - lower) / (L - d),
+                #                         lower,
+                #                         num=d + 1)[:-1]
+                # right_extrapo = np.linspace(upper,
+                #                             upper + d * (upper - lower) / (L - d),
+                #                             num=d + 1)[1:]
+                left_extrapo = [lower] * d
+                right_extrapo = [upper] * d # repeated boundary knots to avoid extrapolation
+                self.knot = np.concatenate(
+                    [left_extrapo, base_knots, right_extrapo])
+            else:
+                raise NotImplementedError
+            
+            kwargs.update({'knots': self.knot})
+            print('B-spline knots:\n', self.knot)
+        
             self.Q_model = SplineQRegressor(
                 state_dim=self.state_dim,
                 num_actions=self.num_actions,
@@ -1506,9 +1569,9 @@ class FQE(SimulationBase):
             next_state)  # the input should be on the original scale
         old_target_Q = reward / (1 - self.gamma)
 
-        # standardize the input
-        state_concat = np.vstack([state, next_state])
-        self.scaler.fit(state_concat)
+        ## standardize the input
+        # state_concat = np.vstack([state, next_state])
+        # self.scaler.fit(state_concat)
         state = self.scaler.transform(state)
         next_state = self.scaler.transform(next_state)
         

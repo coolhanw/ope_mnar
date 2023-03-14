@@ -2202,7 +2202,7 @@ class SimulationBase(object):
         """
         raise NotImplementedError
 
-    def validate_visitation_ratio(self, grid_size=10, visualize=False):
+    def validate_visitation_ratio(self, grid_size=10, visualize=False, apply_weights=False):
         self.grid = []
         self.idx2states = collections.defaultdict(list)
         if not hasattr(self, 'replay_buffer'):
@@ -2211,6 +2211,11 @@ class SimulationBase(object):
         actions = self.replay_buffer.actions
         # predict omega
         omega_values = self.omega(states, actions)
+        if not apply_weights:
+            weights = np.ones_like(actions)
+        else:
+            weights = 1 - self.replay_buffer.dropout_prob
+        omega_values *= weights
         
         discretized_states = np.zeros_like(states)
         for i in range(self.state_dim):
@@ -2291,6 +2296,8 @@ class SimulationBase(object):
             visit_ratio_ref_mat[0][k[0]][k[1]] = freq_target_mat[0][k[0]][k[1]] / max(freq_mat[0][k[0]][k[1]], 0.0001)
             visit_ratio_ref_mat[1][k[0]][k[1]] = freq_target_mat[1][k[0]][k[1]] / max(freq_mat[1][k[0]][k[1]], 0.0001)
     
+        value_est = self.get_value(verbose=False)
+
         if visualize:
 
             fig, ax = plt.subplots(2, self.num_actions, figsize=(5*self.num_actions,8))
@@ -2365,6 +2372,7 @@ class SimulationBase(object):
                 )
                 ax[a,0].invert_yaxis()
                 ax[a,0].set_title(f'empirical visitation ratio (action={a})')
+            fig.suptitle('Value estimate: {:.3f}'.format(value_est))
             plt.savefig(f'./output/est_visitation_ratio_heatplot.png')
             plt.close()
 

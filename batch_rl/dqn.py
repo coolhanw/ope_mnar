@@ -22,7 +22,7 @@ class QNetwork(nn.Module):
         hidden_nonlinearity=nn.ReLU(),
         hidden_w_init=nn.init.xavier_normal_,
         hidden_b_init=nn.init.zeros_,
-        output_nonlinearities=None,
+        output_nonlinearity=None,
         output_bias=True,
         output_w_inits=nn.init.xavier_normal_,
         output_b_inits=nn.init.zeros_,
@@ -59,8 +59,8 @@ class QNetwork(nn.Module):
         output_w_inits(output_layer.weight)
         output_b_inits(output_layer.bias)
         layers.append(output_layer)
-        if output_nonlinearities:
-            layers.append(output_nonlinearities)
+        if output_nonlinearity:
+            layers.append(output_nonlinearity)
 
         self.layers = nn.Sequential(*layers)
 

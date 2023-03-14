@@ -21,10 +21,12 @@ try:
     from ope_mnar.utils import InitialStateSampler, DiscretePolicy, MinMaxScaler
     from custom_env.linear2d import Linear2dEnv, Linear2dVectorEnv
     from custom_env.cartpole import CartPoleEnv, CartPoleVectorEnv
-    from ope_mnar.importance_sampling import MWL, NeuralDualDice
+    from ope_mnar.importance_sampling import MWL, DualDice, NeuralDice
     from ope_mnar.direct_method import FQE, LSTDQ, MQL
     from ope_mnar.doubly_robust import DRL
+    from ope_mnar.density import Square
     from ope_mnar.base import SimulationBase
+    from batch_rl.dqn import QNetwork
 except:
     import sys
     sys.path.append(os.path.expanduser('~/Projects/ope_mnar/ope_mnar'))
@@ -32,10 +34,12 @@ except:
     from ope_mnar.utils import InitialStateSampler, DiscretePolicy, MinMaxScaler
     from custom_env.linear2d import Linear2dEnv, Linear2dVectorEnv
     from custom_env.cartpole import CartPoleEnv, CartPoleVectorEnv
-    from ope_mnar.importance_sampling import MWL, NeuralDualDice
+    from ope_mnar.importance_sampling import MWL, DualDice, NeuralDice
     from ope_mnar.direct_method import FQE, LSTDQ, MQL
     from ope_mnar.doubly_robust import DRL
+    from ope_mnar.density import Square
     from ope_mnar.base import SimulationBase
+    from batch_rl.dqn import QNetwork
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--env',
@@ -44,8 +48,8 @@ parser.add_argument('--env',
                     choices=['linear2d', 'cartpole'])
 parser.add_argument('--method',
                     type=str,
-                    default='fqe',
-                    choices=['mwl', 'fqe', 'lstdq', 'dualdice', 'drl'])
+                    default='mwl',
+                    choices=['mwl', 'fqe', 'lstdq', 'dualdice', 'neuraldice', 'drl'])
 parser.add_argument('--max_episode_length', type=int, default=25)  # 10, 25
 parser.add_argument('--discount', type=float, default=0.8)
 parser.add_argument('--num_trajs', type=int, default=500)  # 250, 500
@@ -55,7 +59,7 @@ parser.add_argument('--eval_policy_mc_size', type=int, default=50000)  # 10000
 parser.add_argument('--eval_horizon', type=int, default=250)
 parser.add_argument('--dropout_scheme',
                     type=str,
-                    default='mnar.v0',
+                    default='0',
                     choices=['0', 'mnar.v0', 'mar.v0'])
 parser.add_argument('--dropout_rate', type=float, default=0.9)
 parser.add_argument(
@@ -65,15 +69,15 @@ parser.add_argument(
     help='the number of observations that is not subject to dropout')
 parser.add_argument('--Q_func_class',
                     type=str,
-                    default='spline',
-                    choices=['nn', 'rf', 'spline'])
+                    default='linear',
+                    choices=['nn', 'rf', 'spline', 'linear'])
 parser.add_argument('--omega_func_class',
                     type=str,
                     default='spline',
                     choices=['nn', 'spline', 'expo_linear'])
 parser.add_argument('--ipw',
                     type=lambda x: (str(x).lower() == 'true'),
-                    default=True)
+                    default=False)
 parser.add_argument('--estimate_missing_prob',
                     type=lambda x: (str(x).lower() == 'true'),
                     default=False)
@@ -133,14 +137,12 @@ if __name__ == '__main__':
                     ((n * T)**(3 / 7))**(1 / 4)))  # degree of freedom
             else:
                 dof = 4
-        ridge_factor = 1e-6  # 1e-3
-        if default_scaler == 'MinMax':
-            knots = np.linspace(start=-spline_degree / (dof - spline_degree),
-                                stop=1 + spline_degree / (dof - spline_degree),
-                                num=dof + spline_degree +
-                                1)  # handle the boundary
-        else:
-            knots = 'equivdist'  # 'equivdist', None
+        ridge_factor = 1e-6  # 1e-3, 1e-6
+
+        knots = np.linspace(start=-spline_degree / (dof - spline_degree),
+                            stop=1 + spline_degree / (dof - spline_degree),
+                            num=dof + spline_degree + 1)  # handle the boundary
+        # knots = 'quantile' # place knots at equally spaced sample quantiles
 
     # dropout model configuration
     dropout_model_type = 'linear'
@@ -200,6 +202,7 @@ if __name__ == '__main__':
         # specify env and env_dropout
         low = -norm.ppf(0.999)  # -np.inf
         high = norm.ppf(0.999)  # np.inf
+        state_dim = 2
         num_actions = 2
         default_key = 'a'
 
@@ -259,6 +262,7 @@ if __name__ == '__main__':
         policy = vec_target_policy if vectorize_env else target_policy
     elif env_class.lower() == 'cartpole':
         num_actions = 2
+        state_dim = 4
         default_key = 'a'
         noise_std = 0.02
 
@@ -359,6 +363,8 @@ if __name__ == '__main__':
     value_est_summary = {}
     if ope_method == 'mwl':
         value_est_summary_filename = f'{ope_method}_{omega_func_class}_value_est_summary'
+    elif ope_method == 'fqe':
+        value_est_summary_filename = f'{ope_method}_{Q_func_class}_value_est_summary'
     else:
         value_est_summary_filename = f'{ope_method}_value_est_summary'
     value_est_summary_path = os.path.join(export_dir,
@@ -392,13 +398,21 @@ if __name__ == '__main__':
                             device=device,
                             seed=seed)
             elif ope_method == 'dualdice':
-                agent = NeuralDualDice(env=env_dropout,
+                agent = DualDice(env=env_dropout,
                                        n=n,
                                        horizon=T + burn_in,
                                        discount=gamma,
                                        eval_env=env,
                                        device=device,
                                        seed=seed)
+            elif ope_method == 'neuraldice':
+                agent = NeuralDice(env=env_dropout,
+                                    n=n,
+                                    horizon=T + burn_in,
+                                    discount=gamma,
+                                    eval_env=env,
+                                    device=device,
+                                    seed=seed)
             elif ope_method == 'fqe':
                 agent = FQE(env=env_dropout,
                             n=n,
@@ -456,8 +470,7 @@ if __name__ == '__main__':
                     scale_obs=False,
                     dropout_obs_count_thres=dropout_obs_count_thres,
                     export_dir=os.path.join(export_dir, 'models'),
-                    pkl_filename=
-                    f'dropout_model_{dropout_model_type}_T{T}_n{n}_gamma{gamma}_{model_suffix}.pkl',
+                    pkl_filename=None, # f'dropout_model_{dropout_model_type}_T{T}_n{n}_gamma{gamma}_{model_suffix}.pkl'
                     seed=seed,
                     include_reward=True,
                     instrument_var_index=instrument_var_index,
@@ -483,7 +496,8 @@ if __name__ == '__main__':
                         initial_state_sampler=InitialStateSampler(
                             initial_states=eval_S_inits_dict[initial_key],
                             seed=seed),
-                        func_class='nn',
+                        omega_func_class='nn',
+                        Q_func_class='rkhs',
                         hidden_sizes=[64, 64],
                         separate_action=True,  # True, False
                         max_iter=1000,
@@ -503,7 +517,7 @@ if __name__ == '__main__':
                     #     initial_state_sampler=InitialStateSampler(
                     #         initial_states=eval_S_inits_dict[initial_key],
                     #         seed=seed),
-                    #     func_class='nn',
+                    #     omega_func_class='nn',
                     #     hidden_sizes=[64, 64],
                     #     separate_action=True,  # True, False
                     #     max_iter=2000,
@@ -523,7 +537,8 @@ if __name__ == '__main__':
                         initial_state_sampler=InitialStateSampler(
                             initial_states=eval_S_inits_dict[initial_key],
                             seed=seed),
-                        func_class='spline',
+                        omega_func_class=omega_func_class,
+                        Q_func_class=Q_func_class,
                         ipw=ipw,
                         estimate_missing_prob=estimate_missing_prob,
                         prob_lbound=prob_lbound,
@@ -544,7 +559,8 @@ if __name__ == '__main__':
                         initial_state_sampler=InitialStateSampler(
                             initial_states=eval_S_inits_dict[initial_key],
                             seed=seed),
-                        func_class='expo_linear',
+                        omega_func_class='expo_linear',
+                        Q_func_class=Q_func_class,
                         ipw=ipw,
                         estimate_missing_prob=estimate_missing_prob,
                         prob_lbound=prob_lbound,
@@ -576,12 +592,13 @@ if __name__ == '__main__':
                     'hidden_w_init': nn.init.xavier_uniform_,
                     'output_w_inits': nn.init.xavier_uniform_
                 }
+                output_activation_fn = Square() if zeta_pos else nn.Identity()
                 zeta_network_kwargs = {
                     'hidden_sizes': [64, 64],
                     'hidden_nonlinearity': nn.ReLU(),
                     'hidden_w_init': nn.init.xavier_uniform_,
                     'output_w_inits': nn.init.xavier_uniform_,
-                    # 'output_nonlinearities': nn.Identity()
+                    'output_nonlinearity': output_activation_fn
                 }
 
                 agent.estimate_omega(
@@ -591,19 +608,83 @@ if __name__ == '__main__':
                         initial_states=eval_S_inits_dict[initial_key],
                         seed=seed),
                     nu_network_kwargs=nu_network_kwargs,
-                    nu_learning_rate=0.0001,
+                    nu_learning_rate=3e-4, # 1e-4
                     zeta_network_kwargs=zeta_network_kwargs,
-                    zeta_learning_rate=0.0001,
+                    zeta_learning_rate=3e-4, # 1e-4
                     zeta_pos=zeta_pos,
                     solve_for_state_action_ratio=True,
                     ipw=ipw,
                     estimate_missing_prob=estimate_missing_prob,
                     prob_lbound=prob_lbound,
-                    max_iter=5000,
+                    max_iter=15000,
                     batch_size=1024,
                     f_exponent=2,
                     primal_form=False,
-                    print_freq=50,
+                    scaler="Standard",
+                    print_freq=500,
+                    verbose=verbose)
+                value_est = agent.get_value()
+                if mc_size == 1:
+                    print('value est: {:.3f}'.format(value_est))
+                    agent.validate_visitation_ratio(grid_size=10,
+                                                    visualize=True)
+            elif ope_method == 'neuraldice':
+                zeta_pos = True
+                zero_reward = True
+                primal_regularizer = 0.
+                dual_regularizer = 1.
+                norm_regularizer = 1.
+                nu_regularizer = 0.
+                zeta_regularizer = 0.
+                nu_learning_rate = 1e-4 # 1e-4
+                zeta_learning_rate = 1e-4 # 1e-4
+
+                nu_network = QNetwork(
+                    input_dim=state_dim,
+                    output_dim=num_actions,
+                    hidden_sizes=[64,64],
+                    hidden_nonlinearity=nn.ReLU(),
+                    hidden_w_init=nn.init.xavier_uniform_,
+                    output_w_inits=nn.init.xavier_uniform_
+                )
+                output_activation_fn = Square() if zeta_pos else nn.Identity()
+                zeta_network = QNetwork(
+                    input_dim=state_dim,
+                    output_dim=num_actions,
+                    hidden_sizes=[64,64],
+                    hidden_nonlinearity=nn.ReLU(),
+                    hidden_w_init=nn.init.xavier_uniform_,
+                    output_w_inits=nn.init.xavier_uniform_,
+                    output_nonlinearity=output_activation_fn
+                )
+
+                agent.estimate_omega(
+                    target_policy=DiscretePolicy(policy_func=policy,
+                                                 num_actions=num_actions),
+                    initial_state_sampler=InitialStateSampler(
+                        initial_states=eval_S_inits_dict[initial_key],
+                        seed=seed),
+                    nu_network=nu_network,
+                    zeta_network=zeta_network,
+                    nu_learning_rate=nu_learning_rate,
+                    zeta_learning_rate=zeta_learning_rate,
+                    zero_reward=zero_reward,
+                    solve_for_state_action_ratio=True,
+                    f_exponent=2,
+                    primal_form=False,
+                    primal_regularizer=primal_regularizer, 
+                    dual_regularizer=dual_regularizer,
+                    norm_regularizer=norm_regularizer,
+                    nu_regularizer=nu_regularizer,
+                    zeta_regularizer=zeta_regularizer,
+                    weight_by_gamma=False,
+                    ipw=ipw,
+                    estimate_missing_prob=estimate_missing_prob,
+                    prob_lbound=prob_lbound,
+                    scaler="Standard",
+                    max_iter=15000,
+                    batch_size=1024,
+                    print_freq=500,
                     verbose=verbose)
                 value_est = agent.get_value()
                 if mc_size == 1:
@@ -652,14 +733,14 @@ if __name__ == '__main__':
                         ipw=ipw,
                         estimate_missing_prob=estimate_missing_prob,
                         prob_lbound=prob_lbound,
-                        max_iter=250,
-                        tol=0.0005,
+                        max_iter=100,
+                        tol=0.001,
                         func_class=Q_func_class,
                         scaler='MinMax',
                         verbose=verbose,
                         print_freq=10,
                         # spline fitting related arguments
-                        ridge_factor=ridge_factor,
+                        ridge_factor=ridge_factor, # recommend using a slightly larger weight than LSTDQ
                         L=max(4, dof),
                         d=spline_degree,
                         knots=knots,
@@ -728,6 +809,8 @@ if __name__ == '__main__':
                     'spline',
                     'ipw':
                     ipw,
+                    'estimate_missing_prob': 
+                    estimate_missing_prob,
                     'prob_lbound':
                     prob_lbound,
                     'scaler':
@@ -748,18 +831,37 @@ if __name__ == '__main__':
                     'verbose':
                     verbose
                 }
-                estimate_Q_kwargs = {
-                    'max_iter': 200,
-                    'tol': 0.001,
-                    'func_class': 'rf',
-                    'scaler': 'Standard',
-                    'n_estimators': 250,
-                    'max_depth': 15,
-                    'min_samples_leaf': 10,
-                    'verbose': verbose
-                }
+                if Q_func_class == 'rf':
+                    estimate_Q_kwargs = {
+                        'max_iter': 200,
+                        'tol': 0.001,
+                        'func_class': 'rf',
+                        'scaler': 'Standard',
+                        'n_estimators': 250,
+                        'max_depth': 15,
+                        'min_samples_leaf': 10,
+                        'verbose': verbose
+                    }
+                elif Q_func_class == 'spline':
+                    estimate_Q_kwargs = {
+                        'ipw': ipw,
+                        'estimate_missing_prob': estimate_missing_prob,
+                        'weight_curr_step': weight_curr_step,
+                        'prob_lbound': prob_lbound,
+                        'ridge_factor': ridge_factor,
+                        'L': max(4, dof),
+                        'd': spline_degree,
+                        'knots': knots,
+                        'scale': 'MinMax',
+                        'product_tensor': True,
+                        'basis_scale_factor': basis_scale_factor,
+                        'grid_search': False,
+                        'verbose': verbose
+                    }
+                    
                 omega_estimator = MWL(**common_kwargs)
-                Q_estimator = FQE(**common_kwargs)
+                Q_estimator = LSTDQ(**common_kwargs) if Q_func_class == 'spline' else FQE(**common_kwargs)
+                print('Fitting model for omega...')
                 agent.estimate_omega(
                     omega_estimator=omega_estimator,
                     target_policy=DiscretePolicy(policy_func=policy,
@@ -768,20 +870,38 @@ if __name__ == '__main__':
                         initial_states=eval_S_inits_dict[initial_key],
                         seed=seed),
                     estimate_omega_kwargs=estimate_omega_kwargs)
+                print('\nFitting model for Q-function...')
                 agent.estimate_Q(Q_estimator=Q_estimator,
                                  target_policy=DiscretePolicy(
                                      policy_func=policy,
                                      num_actions=num_actions),
                                  estimate_Q_kwargs=estimate_Q_kwargs)
+                print("Getting value estimate...")
                 value_est = agent.get_value()
-                print(value_est)
+                print("Getting value interval estimate...\n")
                 value_interval_est = agent.get_value_interval(alpha=0.05)
-                print(value_interval_est)
-                agent.validate_Q(grid_size=10, visualize=True)
+                if mc_size == 1:
+                    print('value est: {:.3f}'.format(value_est))
+                    print('value interval:', value_interval_est)
+                    agent.validate_Q(grid_size=10, visualize=True)
+                    agent.validate_visitation_ratio(grid_size=10,
+                                                    visualize=True)
             else:
                 raise NotImplementedError
 
             value_est_list.append(value_est)
+
+            value_est_summary[initial_key] = {
+                'initial_states': eval_S_inits_dict[initial_key],
+                'value_est_list': value_est_list,
+                'true_value_int': true_value_int
+            }
+
+            # if tracking_info:
+            #     print(tracking_info)
+
+            with open(value_est_summary_path, 'wb') as outfile:
+                pickle.dump(value_est_summary, outfile)
 
             # if ope_method == 'mwl':
             #     # decompose error of value estimation into 3 parts
@@ -870,8 +990,8 @@ if __name__ == '__main__':
             'true_value_int': true_value_int
         }
 
-        if tracking_info:
-            print(tracking_info)
+        # if tracking_info:
+        #     print(tracking_info)
 
     with open(value_est_summary_path, 'wb') as outfile:
         pickle.dump(value_est_summary, outfile)
