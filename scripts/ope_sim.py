@@ -14,6 +14,10 @@ import pickle
 import collections
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from stable_baselines3 import PPO, DQN
+from stable_baselines3.common.evaluation import evaluate_policy
+from stable_baselines3.common.monitor import Monitor
 
 torch.manual_seed(0)  # for better reproducibility
 
@@ -51,15 +55,16 @@ parser.add_argument('--method',
                     default='mwl',
                     choices=['mwl', 'fqe', 'lstdq', 'dualdice', 'neuraldice', 'drl'])
 parser.add_argument('--max_episode_length', type=int, default=25)  # 10, 25
-parser.add_argument('--discount', type=float, default=0.8)
 parser.add_argument('--num_trajs', type=int, default=500)  # 250, 500
+parser.add_argument('--discount', type=float, default=0.9) # 0.8, 0.9
+parser.add_argument('--policy_id', type=str, default='3', choices=['0','1','2','3'])
 parser.add_argument('--burn_in', type=int, default=0)
 parser.add_argument('--mc_size', type=int, default=1)  # 250
 parser.add_argument('--eval_policy_mc_size', type=int, default=50000)  # 10000
 parser.add_argument('--eval_horizon', type=int, default=250)
 parser.add_argument('--dropout_scheme',
                     type=str,
-                    default='0',
+                    default='mnar.v0',
                     choices=['0', 'mnar.v0', 'mar.v0'])
 parser.add_argument('--dropout_rate', type=float, default=0.9)
 parser.add_argument(
@@ -69,7 +74,7 @@ parser.add_argument(
     help='the number of observations that is not subject to dropout')
 parser.add_argument('--Q_func_class',
                     type=str,
-                    default='linear',
+                    default='spline',
                     choices=['nn', 'rf', 'spline', 'linear'])
 parser.add_argument('--omega_func_class',
                     type=str,
@@ -93,11 +98,15 @@ args = parser.parse_args()
 if __name__ == '__main__':
     log_dir = os.path.expanduser('~/Projects/ope_mnar/output')
 
-    env_class = args.env
+    env_class = args.env.lower()
     ope_method = args.method.lower()
     T = args.max_episode_length
     n = args.num_trajs
     total_N = None
+    if env_class == 'cartpole':
+        # override
+        T = 200
+        n = 100
     gamma = args.discount
     mc_size = args.mc_size
     dropout_scheme = args.dropout_scheme
@@ -112,6 +121,7 @@ if __name__ == '__main__':
     eval_horizon = args.eval_horizon
     eval_seed = 123
     prob_lbound = 1e-2
+    vis_quantile = True # only for visualization purpose
 
     # model configuration
     omega_func_class = args.omega_func_class  # marginalized density ratio
@@ -124,25 +134,26 @@ if __name__ == '__main__':
         adaptive_dof = False
         # spline related configuration
         basis_scale_factor = 100  # 1, 100
-        spline_degree = 3
+        spline_degree = 2 # 3
+        product_tensor = True # True
         if env_class == 'linear2d':
             if adaptive_dof:
-                dof = max(4, int(
+                dof = max(spline_degree + 1, int(
                     ((n * T)**(3 / 7))**(1 / 2)))  # degree of freedom
             else:
                 dof = 7
         elif env_class == 'cartpole':
             if adaptive_dof:
-                dof = max(4, int(
+                dof = max(spline_degree + 1, int(
                     ((n * T)**(3 / 7))**(1 / 4)))  # degree of freedom
             else:
-                dof = 4
-        ridge_factor = 1e-6  # 1e-3, 1e-6
+                dof = spline_degree + 1 # 4
+        ridge_factor = 1e-3  # 1e-3, 1e-6
 
-        knots = np.linspace(start=-spline_degree / (dof - spline_degree),
-                            stop=1 + spline_degree / (dof - spline_degree),
-                            num=dof + spline_degree + 1)  # handle the boundary
-        # knots = 'quantile' # place knots at equally spaced sample quantiles
+        # knots = np.linspace(start=-spline_degree / (dof - spline_degree),
+        #                     stop=1 + spline_degree / (dof - spline_degree),
+        #                     num=dof + spline_degree + 1)  # handle the boundary
+        knots = 'quantile' # place knots at equally spaced sample quantiles
 
     # dropout model configuration
     dropout_model_type = 'linear'
@@ -154,7 +165,7 @@ if __name__ == '__main__':
     elif dropout_scheme.startswith('mnar'):
         missing_mechanism = 'mnar'
         instrument_var_index = 1
-        if env_class.lower() == 'linear2d':
+        if env_class == 'linear2d':
             if dropout_scheme == 'mnar.v0':
                 bandwidth_factor = 7.5
             elif dropout_scheme == 'mnar.v1':
@@ -180,7 +191,7 @@ if __name__ == '__main__':
     folder_suffix += f'_missing{dropout_rate}'  # add here
     export_dir = os.path.join(
         log_dir,
-        f'{env_class}{folder_suffix}/T_{T}_n_{n}_gamma{gamma}_dropout_{dropout_scheme}_{weighting_method}'
+        f'{env_class}{folder_suffix}/T{T}_n{n}_policy{args.policy_id}_gamma{gamma}_dropout_{dropout_scheme}_{weighting_method}'
     )
     pathlib.Path(export_dir).mkdir(parents=True, exist_ok=True)
 
@@ -198,13 +209,17 @@ if __name__ == '__main__':
 
     # environment, initial states and policy configuration
     np.random.seed(seed=eval_seed)
-    if env_class.lower() == 'linear2d':
+    if env_class == 'linear2d':
         # specify env and env_dropout
         low = -norm.ppf(0.999)  # -np.inf
         high = norm.ppf(0.999)  # np.inf
         state_dim = 2
         num_actions = 2
         default_key = 'a'
+        spline_scaler = MinMaxScaler(min_val=low, max_val=high)
+        # override
+        basis_scale_factor = 100
+        ridge_factor = 1e-3
 
         if vectorize_env:
             env = Linear2dVectorEnv(
@@ -246,28 +261,63 @@ if __name__ == '__main__':
         eval_S_inits_dict = {default_key: eval_S_inits}
 
         # specify target policy
-        def target_policy(S):
-            if S[0] + S[1] > 0:
-                return [0, 1]
-            else:
-                return [1, 0]
+        if args.policy_id == '0':
+            def target_policy(S):
+                if S[0] + S[1] > 0:
+                    return [0, 1]
+                else:
+                    return [1, 0]
 
-        def vec_target_policy(S):
-            if len(S.shape) == 1:
-                S = S.reshape(1, -1)
-            return np.where((S[:, 0] + S[:, 1] > 0).reshape(-1, 1),
-                            np.repeat([[0, 1]], repeats=S.shape[0], axis=0),
-                            np.repeat([[1, 0]], repeats=S.shape[0], axis=0))
+            def vec_target_policy(S):
+                if len(S.shape) == 1:
+                    S = S.reshape(1, -1)
+                return np.where((S[:, 0] + S[:, 1] > 0).reshape(-1, 1),
+                                np.repeat([[0, 1]], repeats=S.shape[0], axis=0),
+                                np.repeat([[1, 0]], repeats=S.shape[0], axis=0))
+        elif args.policy_id == '1': # behavior policy
+            def target_policy(S):
+                return [0.5, 0.5]
+
+            def vec_target_policy(S):
+                if len(S.shape) == 1:
+                    S = S.reshape(1, -1)
+                return np.repeat([[0.5, 0.5]], repeats=S.shape[0], axis=0)
+            
+        elif args.policy_id == '2':
+            def target_policy(S):
+                p = np.exp(-S[0]-S[1])
+                return [1/(1+p), p/(1+p)]
+
+            def vec_target_policy(S):
+                if len(S.shape) == 1:
+                    S = S.reshape(1, -1)
+                p = np.exp(-S[:,0]-S[:,1]).reshape(-1,1)
+                return np.hstack([1/(1+p), p/(1+p)])
+
+        elif args.policy_id == '3':
+            def target_policy(S):
+                p = np.exp(S[0]+S[1])
+                return [1/(1+p), p/(1+p)]
+
+            def vec_target_policy(S):
+                if len(S.shape) == 1:
+                    S = S.reshape(1, -1)
+                p = np.exp(S[:,0]+S[:,1]).reshape(-1,1)
+                return np.hstack([1/(1+p), p/(1+p)])
 
         policy = vec_target_policy if vectorize_env else target_policy
-    elif env_class.lower() == 'cartpole':
+    elif env_class == 'cartpole':
         num_actions = 2
         state_dim = 4
         default_key = 'a'
         noise_std = 0.02
+        spline_scaler = MinMaxScaler() # fit from data
+        # override
+        basis_scale_factor = 10
+        ridge_factor = 1e-3
 
-        dropout_scheme = '0'
-        dropout_rate = 0.
+        # dropout_scheme = '0'
+        # dropout_rate = 0.
         dropout_obs_count_thres = 10
 
         if vectorize_env:
@@ -276,8 +326,7 @@ if __name__ == '__main__':
                 T=T,
                 noise_std=noise_std,
                 dropout_scheme='0',
-                dropout_rate=0.,
-                dropout_obs_count_thres=dropout_obs_count_thres)
+                dropout_rate=0.)
             env_dropout = CartPoleVectorEnv(
                 num_envs=n,
                 T=T,
@@ -289,8 +338,7 @@ if __name__ == '__main__':
             env = CartPoleEnv(T=T,
                               noise_std=noise_std,
                               dropout_scheme='0',
-                              dropout_rate=0.,
-                              dropout_obs_count_thres=dropout_obs_count_thres)
+                              dropout_rate=0.)
             env_dropout = CartPoleEnv(
                 T=T,
                 noise_std=noise_std,
@@ -304,28 +352,63 @@ if __name__ == '__main__':
                                          size=(eval_policy_mc_size, env.dim))
         eval_S_inits_dict = {default_key: eval_S_inits}
 
+        # train optimal policy using DQN
+        rl_env = CartPoleEnv(T=T, noise_std=noise_std, dropout_scheme='0', dropout_rate=0.)
+        rl_agent_name = 'dqn'
+        rl_model_path = os.path.join(log_dir, f"{env_class}{folder_suffix}/{rl_agent_name}_{env_class}")
+        print('rl_model_path', rl_model_path)
+        if os.path.exists(rl_model_path + '.zip'):
+            print('Load optimal policy...')
+            rl_agent = DQN.load(path=rl_model_path)
+            print('Finished!')
+        else:
+            print('Learn optimal policy...')
+            rl_agent = DQN(
+                policy="MlpPolicy", 
+                env=rl_env, 
+                buffer_size=int(1e5),
+                batch_size=64,
+                exploration_final_eps=0.04, # final value of random action probability
+                exploration_fraction=0.16, # fraction of entire training period over which the exploration rate is reduced
+                gradient_steps=128, # How many gradient steps to do after each rollout
+                learning_rate=0.005,
+                learning_starts=1000, # how many steps of the model to collect transitions for before learning starts
+                policy_kwargs=dict(net_arch=[256, 256]),
+                target_update_interval=10,
+                train_freq=256, # Update the model every train_freq steps
+                verbose=0,
+                tensorboard_log=f"./logs/{rl_agent_name}_{env_class}_tensorboard/"
+            )
+            rl_agent.learn(total_timesteps=5e4)
+            rl_agent.save(path=rl_model_path)
+            print('Finished!')
+        # evaluate
+        # mean_reward, std_reward = evaluate_policy(model=rl_agent, env=rl_agent.get_env(), n_eval_episodes=30)
+        mean_reward, std_reward = evaluate_policy(model=rl_agent, env=Monitor(rl_env), n_eval_episodes=30)
+        print('mean_reward: {:.3f}, std_reward: {:.3f}'.format(mean_reward, std_reward))
+
         # specify target policy
-        def target_policy(S):
-            if S[0] < 0:
-                return [0, 1]
-            else:
-                return [1, 0]
-
-        def vec_target_policy(S):
-            if len(S.shape) == 1:
-                S = S.reshape(1, -1)
-            return np.where((S[:, 0] < 0).reshape(-1, 1),
-                            np.repeat([[0, 1]], repeats=S.shape[0], axis=0),
-                            np.repeat([[1, 0]], repeats=S.shape[0], axis=0))
-
-        policy = vec_target_policy if vectorize_env else target_policy
+        if args.policy_id == '0':
+            def vec_target_policy(S):
+                # action, _ = rl_agent.predict(S)
+                q_values = rl_agent.q_net(torch.FloatTensor(S))
+                action_prob = F.softmax(input=q_values, dim=1)
+                return action_prob.detach().numpy()
+        elif args.policy_id == '1':
+            def vec_target_policy(S):
+                # action, _ = rl_agent.predict(S)
+                q_values = rl_agent.q_net(torch.FloatTensor(S))
+                action_prob = F.softmax(input=q_values / 10, dim=1)
+                return action_prob.detach().numpy()
+        
+        policy = vec_target_policy
     else:
         raise NotImplementedError
 
     # get true value via MC approximation (use as baseline)
     true_value_path = os.path.join(
         log_dir,
-        f'{env_class}{folder_suffix}/{env_class}_true_value_T_{eval_horizon}_gamma{gamma}_size{eval_policy_mc_size}'
+        f'{env_class}{folder_suffix}/{env_class}_true_value_T{eval_horizon}_policy{args.policy_id}_gamma{gamma}_size{eval_policy_mc_size}'
     )
     if not os.path.exists(true_value_path):
         print(f'compute true value via MC approximation...')
@@ -342,8 +425,9 @@ if __name__ == '__main__':
                 S_inits=eval_S_inits_dict[k],
                 eval_size=eval_policy_mc_size,
                 eval_horizon=eval_horizon,
+                repeats=int(2e5) // eval_policy_mc_size,
             )
-            true_value_dict[k] = {
+            true_value_dict[k] = { 
                 'initial_states': eval_S_inits_dict[k],
                 'true_value_list': true_value_list,
                 'true_value_int': true_value_int,
@@ -371,6 +455,7 @@ if __name__ == '__main__':
                                           value_est_summary_filename)
     for initial_key in eval_S_inits_dict.keys():
         value_est_list = []
+        value_interval_list = []
         true_value_int = true_value_dict[initial_key]['true_value_int']
 
         tracking_info = collections.defaultdict(list)
@@ -380,7 +465,7 @@ if __name__ == '__main__':
             # np.random.seed(seed)
             # if the observational space of the environemnt is bounded, the initial states will only be sampled from uniform distribution
             # if we still want a normal distribution, pass random initial states manually.
-            if env_class.lower() == 'linear2d':
+            if env_class == 'linear2d':
                 train_S_inits = np.random.normal(loc=0,
                                                  scale=1,
                                                  size=(n, env.dim))
@@ -454,6 +539,14 @@ if __name__ == '__main__':
             print(f'missing rate: {agent.missing_rate}')
             print(f'n: {agent.n}')
             print(f'total_N: {agent.total_N}')
+
+            # print(agent.masked_buffer[0][1][:10])
+            cum_rewards_list = []
+            for i in agent.masked_buffer.keys():
+                rewards = agent.masked_buffer[i][2]
+                cum_rewards = sum(gamma ** t * rewards[t] for t in range(len(rewards)))
+                cum_rewards_list.append(cum_rewards)
+            print('empirical value:', np.mean(cum_rewards_list))
 
             # estimate dropout probability
             if estimate_missing_prob:
@@ -546,10 +639,10 @@ if __name__ == '__main__':
                         if env is not None else MinMaxScaler(),
                         # spline fitting related arguments
                         ridge_factor=ridge_factor,
-                        L=max(4, dof),
+                        L=max(spline_degree+1, dof),
                         d=spline_degree,
                         knots=knots,
-                        product_tensor=True,
+                        product_tensor=product_tensor,
                         basis_scale_factor=basis_scale_factor,
                         verbose=verbose)
                 elif omega_func_class == 'expo_linear':
@@ -566,10 +659,10 @@ if __name__ == '__main__':
                         prob_lbound=prob_lbound,
                         scaler=MinMaxScaler(min_val=env.low, max_val=env.high)
                         if env is not None else MinMaxScaler(),
-                        L=max(4, dof),
+                        L=max(spline_degree+1, dof),
                         d=spline_degree,
                         knots=knots,
-                        product_tensor=True,
+                        product_tensor=product_tensor,
                         basis_scale_factor=
                         3,  # to ensure the input lies in a reasonable range, otherwise the training is not as stable
                         lr=5e-3,
@@ -580,10 +673,12 @@ if __name__ == '__main__':
                         verbose=verbose)
 
                 value_est = agent.get_value()
-                if mc_size == 1:
+                if mc_size <= 2:
+                    print('value true: {:.3f}'.format(true_value_int))
                     print('value est: {:.3f}'.format(value_est))
                     agent.validate_visitation_ratio(grid_size=10,
-                                                    visualize=True)
+                                                    visualize=True,
+                                                    quantile=vis_quantile)
             elif ope_method == 'dualdice':
                 zeta_pos = True
                 nu_network_kwargs = {
@@ -624,10 +719,11 @@ if __name__ == '__main__':
                     print_freq=500,
                     verbose=verbose)
                 value_est = agent.get_value()
-                if mc_size == 1:
+                if mc_size <= 2:
                     print('value est: {:.3f}'.format(value_est))
                     agent.validate_visitation_ratio(grid_size=10,
-                                                    visualize=True)
+                                                    visualize=True,
+                                                    quantile=vis_quantile)
             elif ope_method == 'neuraldice':
                 zeta_pos = True
                 zero_reward = True
@@ -687,10 +783,11 @@ if __name__ == '__main__':
                     print_freq=500,
                     verbose=verbose)
                 value_est = agent.get_value()
-                if mc_size == 1:
+                if mc_size <= 2:
                     print('value est: {:.3f}'.format(value_est))
                     agent.validate_visitation_ratio(grid_size=10,
-                                                    visualize=True)
+                                                    visualize=True,
+                                                    quantile=vis_quantile)
             elif ope_method == 'fqe':  # fitted Q-evalution
                 if Q_func_class == 'nn':
                     agent.estimate_Q(
@@ -741,17 +838,17 @@ if __name__ == '__main__':
                         print_freq=10,
                         # spline fitting related arguments
                         ridge_factor=ridge_factor, # recommend using a slightly larger weight than LSTDQ
-                        L=max(4, dof),
+                        L=max(spline_degree+1, dof),
                         d=spline_degree,
                         knots=knots,
-                        product_tensor=True,
+                        product_tensor=product_tensor,
                         basis_scale_factor=basis_scale_factor)
                 print("Getting value estimate...\n")
                 value_est = agent.get_value(
                     S_inits=eval_S_inits_dict[initial_key])
-                if mc_size == 1:
+                if mc_size <= 2:
                     print('value est: {:.3f}'.format(value_est))
-                    agent.validate_Q(grid_size=10, visualize=True)
+                    agent.validate_Q(grid_size=10, visualize=True, quantile=vis_quantile)
             elif ope_method == 'lstdq':
                 assert Q_func_class == 'spline'
                 agent.estimate_Q(target_policy=policy,
@@ -760,11 +857,11 @@ if __name__ == '__main__':
                                  weight_curr_step=weight_curr_step,
                                  prob_lbound=prob_lbound,
                                  ridge_factor=ridge_factor,
-                                 L=max(4, dof),
+                                 L=max(spline_degree+1, dof),
                                  d=spline_degree,
                                  knots=knots,
-                                 scale='MinMax',
-                                 product_tensor=True,
+                                 scaler=spline_scaler,
+                                 product_tensor=product_tensor,
                                  basis_scale_factor=basis_scale_factor,
                                  grid_search=False,
                                  verbose=verbose)
@@ -774,10 +871,11 @@ if __name__ == '__main__':
                 print("Getting value interval estimate...\n")
                 value_interval_est = agent.get_value_interval(
                     S_inits=eval_S_inits_dict[initial_key], alpha=0.05)
-                if mc_size == 1:
+                if mc_size <= 2:
+                    print('value true: {:.3f}'.format(true_value_int))
                     print('value est: {:.3f}'.format(value_est))
                     print('value interval:', value_interval_est)
-                    agent.validate_Q(grid_size=10, visualize=True, seed=seed)  # sanity check
+                    agent.validate_Q(grid_size=10, visualize=True, seed=seed, quantile=vis_quantile)  # sanity check
             elif ope_method == 'mql':
                 agent.estimate_Q(target_policy=DiscretePolicy(
                     policy_func=policy, num_actions=num_actions),
@@ -793,7 +891,7 @@ if __name__ == '__main__':
                 value_est = agent.get_value(
                     S_inits=eval_S_inits_dict[initial_key])
                 print(value_est)
-                agent.validate_Q(grid_size=10, visualize=True)
+                agent.validate_Q(grid_size=10, visualize=True, quantile=vis_quantile)
             elif ope_method == 'drl':
                 common_kwargs = {
                     'env': env_dropout,
@@ -819,13 +917,13 @@ if __name__ == '__main__':
                     'ridge_factor':
                     ridge_factor,
                     'L':
-                    max(4, dof),
+                    max(spline_degree+1, dof),
                     'd':
                     spline_degree,
                     'knots':
                     knots,
                     'product_tensor':
-                    True,
+                    product_tensor,
                     'basis_scale_factor':
                     basis_scale_factor,
                     'verbose':
@@ -849,11 +947,11 @@ if __name__ == '__main__':
                         'weight_curr_step': weight_curr_step,
                         'prob_lbound': prob_lbound,
                         'ridge_factor': ridge_factor,
-                        'L': max(4, dof),
+                        'L': max(spline_degree+1, dof),
                         'd': spline_degree,
                         'knots': knots,
                         'scale': 'MinMax',
-                        'product_tensor': True,
+                        'product_tensor': product_tensor,
                         'basis_scale_factor': basis_scale_factor,
                         'grid_search': False,
                         'verbose': verbose
@@ -880,22 +978,28 @@ if __name__ == '__main__':
                 value_est = agent.get_value()
                 print("Getting value interval estimate...\n")
                 value_interval_est = agent.get_value_interval(alpha=0.05)
-                if mc_size == 1:
+                if mc_size <= 2:
                     print('value est: {:.3f}'.format(value_est))
-                    print('value interval:', value_interval_est)
-                    agent.validate_Q(grid_size=10, visualize=True)
+                    print('value interval: {}\n'.format(value_interval_est))
+                    agent.validate_Q(grid_size=10, visualize=True, quantile=vis_quantile)
                     agent.validate_visitation_ratio(grid_size=10,
-                                                    visualize=True)
+                                                    visualize=True,
+                                                    quantile=vis_quantile)
             else:
                 raise NotImplementedError
 
             value_est_list.append(value_est)
-
             value_est_summary[initial_key] = {
                 'initial_states': eval_S_inits_dict[initial_key],
                 'value_est_list': value_est_list,
                 'true_value_int': true_value_int
             }
+            if ope_method in ['lstdq', 'drl']:
+                value_interval_list.append((
+                    value_interval_est['lower_bound'], 
+                    value_interval_est['upper_bound']
+                ))
+                value_est_summary[initial_key]['value_interval_list'] = value_interval_list
 
             # if tracking_info:
             #     print(tracking_info)
@@ -924,11 +1028,11 @@ if __name__ == '__main__':
             #                        weight_curr_step=weight_curr_step,
             #                        prob_lbound=prob_lbound,
             #                        ridge_factor=ridge_factor,
-            #                        L=max(4, dof),
+            #                        L=max(spline_degree+1, dof),
             #                        d=spline_degree,
             #                        knots=knots,
-            #                        scale='MinMax',
-            #                        product_tensor=True,
+            #                        scaler='MinMax',
+            #                        product_tensor=product_tensor,
             #                        basis_scale_factor=basis_scale_factor,
             #                        grid_search=False,
             #                        verbose=verbose)
@@ -989,6 +1093,8 @@ if __name__ == '__main__':
             'value_est_list': value_est_list,
             'true_value_int': true_value_int
         }
+        if ope_method in ['lstdq', 'drl']:
+            value_est_summary[initial_key]['value_interval_list'] = value_interval_list
 
         # if tracking_info:
         #     print(tracking_info)

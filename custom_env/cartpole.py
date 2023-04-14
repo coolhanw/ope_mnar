@@ -31,7 +31,7 @@ def dropout_model(obs_history, action_history, reward_history, T,
     theta_threshold_radians = 12 * 2 * math.pi / 360
     x_threshold = 2.4
     if dropout_scheme == '0':
-        prob = np.zeros(shape=obs_history.shape[0])
+        prob = 0
     elif dropout_scheme == 'mnar.v0':
         x, x_dot, theta, theta_dot = obs_history[-1, :].T
         terminated = np.logical_or.reduce((x < -x_threshold, x > x_threshold, 
@@ -74,7 +74,10 @@ def vec_dropout_model(obs_history, action_history, reward_history, T,
         terminated = np.logical_or.reduce((x < -x_threshold, x > x_threshold, 
                 theta < -theta_threshold_radians, theta > theta_threshold_radians)).astype(bool)
         if dropout_rate == 0.9:
-            logit = 7 - 3 * terminated
+            # logit = 7 - 3 * terminated
+            # logit = 5 - 3 * terminated
+            # logit = 5 - 2 * (np.power(x, 2) < 1.2)
+            logit = 5 - 2.5 * (x > 0)
         elif dropout_rate == 0.6:
             logit = 7 - 2.2 * terminated
         prob = 1 / (np.exp(logit) + 1)
@@ -164,7 +167,7 @@ class CartPoleEnv(gym.Env[np.ndarray, Union[int, np.ndarray]]):
         noise_std: float = 0.02, 
         dropout_scheme: str = '0',
         dropout_rate: float = 0.,
-        dropout_obs_count_thres: int = 2,
+        dropout_obs_count_thres: int = 1,
         # dropout_model: callable = None
     ):
         self.gravity = 9.8
@@ -214,6 +217,7 @@ class CartPoleEnv(gym.Env[np.ndarray, Union[int, np.ndarray]]):
         self.step_count = 0
         self.low = self.observation_space.low
         self.high = self.observation_space.high
+        self._np_random = np.random
         # if dropout_model:
         #     assert callable(dropout_model)
         # else:
@@ -237,13 +241,16 @@ class CartPoleEnv(gym.Env[np.ndarray, Union[int, np.ndarray]]):
     def cal_reward(self, x, theta):
         # x and theta represents cart position and pole angle respectively
         # https://towardsdatascience.com/infinite-steps-cartpole-problem-with-variable-reward-7ad9a0dcf6d0
-        reward = (1 - (x ** 2) / 11.52 - (theta ** 2) / 288)
+        reward = (1 - 5 * (x ** 2) / 11.52 - 5 * (theta ** 2) / 288)
         return reward
 
     def step(self, action):
         err_msg = f"{action!r} ({type(action)}) invalid"
         assert self.action_space.contains(action), err_msg
         assert self.state is not None, "Call reset before using step method."
+        self.step_count += 1 # custom
+        self.actions_history.append(action)
+
         x, x_dot, theta, theta_dot = self.state
         force = self.force_mag if action == 1 else -self.force_mag
         costheta = math.cos(theta)
@@ -282,52 +289,89 @@ class CartPoleEnv(gym.Env[np.ndarray, Union[int, np.ndarray]]):
             or theta > self.theta_threshold_radians
             or self.step_count >= self.T # custom
         )
-        self.step_count += 1 # custom
 
-        if not terminated:
-            reward = 1.0
-        elif self.steps_beyond_terminated is None:
-            # Pole just fell!
-            self.steps_beyond_terminated = 0
-            reward = 1.0
-        else:
-            if self.steps_beyond_terminated == 0:
-                logger.warn(
-                    "You are calling 'step()' even though this "
-                    "environment has already returned terminated = True. You "
-                    "should always call 'reset()' once you receive 'terminated = "
-                    "True' -- any further steps are undefined behavior."
-                )
-            self.steps_beyond_terminated += 1
-            reward = 0.0
+        # if not terminated:
+        #     reward = 1.0
+        # elif self.steps_beyond_terminated is None:
+        #     # Pole just fell!
+        #     self.steps_beyond_terminated = 0
+        #     reward = 1.0
+        # else:
+        #     if self.steps_beyond_terminated == 0:
+        #         logger.warn(
+        #             "You are calling 'step()' even though this "
+        #             "environment has already returned terminated = True. You "
+        #             "should always call 'reset()' once you receive 'terminated = "
+        #             "True' -- any further steps are undefined behavior."
+        #         )
+        #     self.steps_beyond_terminated += 1
+        #     reward = 0.0
         
         # custom
-        if reward == 1.0:
-            reward = self.cal_reward(x, theta)
-
-        if self.render_mode == "human":
-            self.render()
-        return np.array(self.state, dtype=np.float32), reward, terminated, {}
+        reward = self.cal_reward(x, theta)
+        self.rewards_history.append(reward)
+        self.states_history = np.concatenate([
+            self.states_history, np.array(self.state).reshape(1,-1)], axis=0)
+        if len(self.rewards_history) < 2:
+            self.dropout_prob = self.dropout_model(
+                obs_history=self.states_history,
+                action_history=self.actions_history,
+                reward_history=[0] + self.rewards_history)  # (num_envs,1)
+        else:
+            self.dropout_prob = self.dropout_model(
+                obs_history=self.states_history,
+                action_history=self.actions_history,
+                reward_history=self.rewards_history)  # (num_envs,1)  
+        self.survival_prob = self.next_survival_prob
+        self.next_survival_prob *= 1 - self.dropout_prob
+        self.dropout_next = (self.dropout_next == 1) * 1 + (
+            self.dropout_next < 1) * (self.np_random.uniform(
+                low=0, high=1) < self.dropout_prob)  # (num_envs,1)   
+        terminated = self.dropout_next or self.step_count >= self.T # custom  
+        if self.step_count >= self.T:
+            self.step_count = 0
+        # if self.render_mode == "human":
+        #     self.render()
+        env_infos = {
+            'next_survival_prob': self.next_survival_prob,
+            'dropout': self.dropout_next,
+            'dropout_prob': self.dropout_prob
+        }
+        return np.array(self.state, dtype=np.float32), reward, terminated, env_infos
 
     def reset(
         self,
         *,
+        state: Optional[np.ndarray] = None,
         seed: Optional[int] = None,
         options: Optional[dict] = None,
     ):
         # super().reset(seed=seed)
-        self.seed(seed=seed)
+        # self.seed(seed=seed)
+
         # Note that if you use custom reset bounds, it may lead to out-of-bound
         # state/observations.
         low, high = utils.maybe_parse_reset_bounds(
-            options, -0.05, 0.05  # default low
-        )  # default high
-        self.state = self.np_random.uniform(low=low, high=high, size=(4,))
+            options, -0.05, 0.05
+        )  # default low and high
+        if state is not None:
+            self.state = state
+        else:
+            self.state = self.np_random.uniform(low=low, high=high, size=(4,))
         self.steps_beyond_terminated = None
         self.step_count = 0 # custom
 
-        if self.render_mode == "human":
-            self.render()
+        # if self.render_mode == "human":
+        #     self.render()
+
+        # custom
+        self.actions_history = []
+        self.rewards_history = []
+        self.survival_prob = 1
+        self.next_survival_prob = 1
+        self.dropout_next = 0
+        self.states_history = self.state.reshape(1,-1)
+        
         return np.array(self.state, dtype=np.float32)
 
     def render(self):
@@ -456,7 +500,7 @@ class CartPoleVectorEnv(VectorEnv):
         noise_std=0.02, 
         dropout_scheme='0', 
         dropout_rate=0.,
-        dropout_obs_count_thres=2
+        dropout_obs_count_thres=1
     ):
         """
         Args:
@@ -495,8 +539,9 @@ class CartPoleVectorEnv(VectorEnv):
         self.dim = 4
         self.noise_std = np.tile(noise_std, reps=(4,1))
         self.step_count = 0
-        self.low = self.observation_space.low
-        self.high = self.observation_space.high
+        self.low = self.single_observation_space.low
+        self.high = self.single_observation_space.high
+        self._np_random = np.random
         # if vec_dropout_model:
         #     assert callable(vec_dropout_model)
         # else:
@@ -515,12 +560,11 @@ class CartPoleVectorEnv(VectorEnv):
     def cal_reward(self, x, theta):
         # x and theta represents cart position and pole angle respectively
         # https://towardsdatascience.com/infinite-steps-cartpole-problem-with-variable-reward-7ad9a0dcf6d0
-        reward = (1 - (x ** 2) / 11.52 - (theta ** 2) / 288)
+        reward = (1 - 5 * (x ** 2) / 11.52 - 5 * (theta ** 2) / 288)
         return reward
 
     def reset_async(self, S_inits=None, seed=None):
-        # super().reset(seed=seed)
-        self.seed(seed=seed)
+        # self.seed(seed=seed)
 
         self.step_count = 0
         self.actions_history = None  # (num_env,T)
@@ -539,7 +583,7 @@ class CartPoleVectorEnv(VectorEnv):
             ) == self.num_envs, "The length of S_inits should be the same as num_envs"
         else:
             # S_inits = self.observation_space.sample()
-            S_inits = self.np_random.uniform(low=-0.05, high=0.05, size=(self.num_envs, 4))
+            S_inits = self._np_random.uniform(low=-0.05, high=0.05, size=(self.num_envs, 4))
         S_inits = np.clip(a=S_inits, a_min=self.observation_space.low, a_max=self.observation_space.high)
 
         self.steps_beyond_terminated = np.repeat(None, self.num_envs)
@@ -670,7 +714,8 @@ class CartPoleVectorEnv(VectorEnv):
 
         self.dones = np.logical_or.reduce((x < -self.x_threshold
                 , x > self.x_threshold, theta < -self.theta_threshold_radians
-                     , theta > self.theta_threshold_radians, np.repeat(self.step_count, self.num_envs) >= self.T)).astype(bool)
+                , theta > self.theta_threshold_radians
+                , np.repeat(self.step_count, self.num_envs) >= self.T)).astype(bool)
         if self.step_count >= self.T:
             self.step_count = 0
 
@@ -713,10 +758,19 @@ class CartPoleVectorEnv(VectorEnv):
 
 
 if __name__ == '__main__':
-    # env = CartPoleEnv(T=100, noise_std=0.1, dropout_scheme='mar.v0', dropout_rate=0.9, dropout_obs_count_thres=10)
+    # env = CartPoleEnv(
+    #     T=100, 
+    #     noise_std=0.1, 
+    #     dropout_scheme='mar.v0', 
+    #     dropout_rate=0.9, 
+    #     dropout_obs_count_thres=10)
     # _ = env.reset(seed=0)
-    # for _ in range(5):
-    #     _, _, _, _ = env.step(action=np.random.randint(2))
+    # done = False
+    # step = 0
+    # while not done:
+    #     _, _, done, _ = env.step(action=np.random.randint(2))
+    #     step += 1
+    # print('num steps:', step)
 
     num_envs = 10
     vec_env = CartPoleVectorEnv(
@@ -724,10 +778,13 @@ if __name__ == '__main__':
         T=100, 
         noise_std=0.1, 
         dropout_scheme='mnar.v0', 
-        dropout_rate=0.6, 
+        dropout_rate=0.9, 
         dropout_obs_count_thres=10
     )
     _ = vec_env.reset(seed=0)
-    for _ in range(100):
-        _, _ , _, _ = vec_env.step(actions=np.random.randint(low=0, high=2,size=(num_envs,1)))
-    print('missing rate: ', 1 - np.mean(vec_env.states_history_mask[:, -1]))
+    max_dropout_prob = 0
+    for _ in range(200):
+        _, _ , _, env_infos = vec_env.step(actions=np.random.randint(low=0, high=2,size=(num_envs,1)))
+        max_dropout_prob = max(max_dropout_prob, np.max(env_infos['dropout_prob']))
+    print('missing rate:', 1 - np.mean(vec_env.states_history_mask[:, -1]))
+    print('max dropout prob:', max_dropout_prob)

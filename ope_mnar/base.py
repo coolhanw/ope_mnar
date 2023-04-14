@@ -2081,7 +2081,8 @@ class SimulationBase(object):
                         eval_horizon=None,
                         seed=None,
                         S_inits=None,
-                        mask_unobserved=False):
+                        mask_unobserved=False,
+                        repeats=1):
         """
         Evaluate given policy (true value) using Monte Carlo approximation
 
@@ -2091,6 +2092,7 @@ class SimulationBase(object):
             seed (int): random seed passed to gen_single_traj() or gen_batch_trajs()
             S_inits (np.ndarray): initial states for policy evaluation
             mask_unobserved (bool): if True, mask unobserved states
+            repeats (int): the number of trajectories generated for each state
 
         Returns:
             true_V (list): true value for each state
@@ -2132,13 +2134,16 @@ class SimulationBase(object):
                 S_inits = np.tile(A=S_inits, reps=(eval_size, 1))
             if S_inits is not None:
                 eval_size = len(S_inits)
+                ###################
+                S_inits = np.repeat(a=S_inits, repeats=repeats, axis=0)
+                ###################
             
             old_num_envs = self.eval_env.num_envs
             old_horizon = self.eval_env.T
             # reset eval_env
             if eval_horizon is not None:
                 self.eval_env.T = eval_horizon
-            self.eval_env.num_envs = eval_size
+            self.eval_env.num_envs = int(eval_size * repeats)
             self.eval_env.observation_space = batch_space(
                 self.eval_env.single_observation_space,
                 n=self.eval_env.num_envs)
@@ -2170,6 +2175,9 @@ class SimulationBase(object):
                 self.gamma**np.arange(start=0,
                                       stop=rewards_history.shape[1]).reshape(
                                           -1, 1))
+            ###################
+            true_value = true_value.reshape(eval_size, repeats, order='C').mean(axis=1)
+            ###################
             true_V = true_value.squeeze().tolist()
 
             return S_inits, true_V, np.mean(true_V)
@@ -2202,7 +2210,7 @@ class SimulationBase(object):
         """
         raise NotImplementedError
 
-    def validate_visitation_ratio(self, grid_size=10, visualize=False, apply_weights=False):
+    def validate_visitation_ratio(self, grid_size=10, visualize=False, quantile=False, apply_weights=False):
         self.grid = []
         self.idx2states = collections.defaultdict(list)
         if not hasattr(self, 'replay_buffer'):
@@ -2219,10 +2227,12 @@ class SimulationBase(object):
         
         discretized_states = np.zeros_like(states)
         for i in range(self.state_dim):
-            disc_bins = np.linspace(start=self.low[i] - 0.1, stop=self.high[i] + 0.1, num=grid_size + 1)
-            # disc_bins = np.quantile(a=states[:,i], q=np.linspace(0, 1, grid_size + 1))
-            # disc_bins[0] -= 0.1
-            # disc_bins[-1] += 0.1
+            if quantile:
+                disc_bins = np.quantile(a=states[:,i], q=np.linspace(0, 1, grid_size + 1))
+                disc_bins[0] -= 0.1
+                disc_bins[-1] += 0.1
+            else:
+                disc_bins = np.linspace(start=self.low[i] - 0.1, stop=self.high[i] + 0.1, num=grid_size + 1)
             self.grid.append(disc_bins)
             discretized_states[:,i] = np.digitize(states[:,i], bins=disc_bins) - 1
         discretized_states = list(map(tuple, discretized_states.astype('int')))
@@ -2376,11 +2386,16 @@ class SimulationBase(object):
             plt.savefig(f'./output/est_visitation_ratio_heatplot.png')
             plt.close()
 
-    def validate_Q(self, grid_size=10, visualize=False):
+    def validate_Q(self, grid_size=10, visualize=False, quantile=False):
         self.grid = []
         self.idx2states = collections.defaultdict(list)
         states = self.replay_buffer.states
         actions = self.replay_buffer.actions
+
+        repeats_per_state = 2 # 1
+        states = np.repeat(a=states, repeats=repeats_per_state, axis=0)
+        actions = np.repeat(a=actions, repeats=repeats_per_state, axis=0)
+
         Q_est = self.Q(states=states, actions=actions).squeeze()
 
         # generate trajectories under the target policy
@@ -2420,17 +2435,20 @@ class SimulationBase(object):
 
         discretized_states = np.zeros_like(states)
         for i in range(self.state_dim):
-            disc_bins = np.linspace(start=self.low[i] - 0.1, stop=self.high[i] + 0.1, num=grid_size + 1)
-            # disc_bins = np.quantile(a=states[:,i], q=np.linspace(0, 1, grid_size + 1))
-            # disc_bins[0] -= 0.1
-            # disc_bins[-1] += 0.1
+            if quantile:
+                disc_bins = np.quantile(a=states[:,i], q=np.linspace(0, 1, grid_size + 1))
+                disc_bins[0] -= 0.1
+                disc_bins[-1] += 0.1
+            else:
+                disc_bins = np.linspace(start=self.low[i] - 0.1, stop=self.high[i] + 0.1, num=grid_size + 1)
             self.grid.append(disc_bins)
             discretized_states[:,i] = np.digitize(states[:,i], bins=disc_bins) - 1
         discretized_states = list(map(tuple, discretized_states.astype('int')))
         for ds, s, a, q, qr in zip(discretized_states, states, actions, Q_est, Q_ref):
-            self.idx2states[ds].append(np.concatenate([s, [a], [q], [qr]]))
+            # only use the first 2 dimensions of discretized_states as key
+            self.idx2states[ds[:2]].append(np.concatenate([s, [a], [q], [qr]]))
 
-        # only for 2D state, binary action
+        # only for binary action
         Q_mat = np.zeros(shape=(self.num_actions, grid_size, grid_size))
         Q_ref_mat = np.zeros(shape=(self.num_actions, grid_size, grid_size))
         for k, v in self.idx2states.items():

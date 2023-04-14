@@ -1136,7 +1136,6 @@ class StateActionVisitationRatioSpline():
         U_mat = self._U(S=next_states, policy=self.target_policy.policy_func)
 
         if self.Q_func_class == 'spline':
-            print('mark1')
             # inverse_wts_mat = np.diag(v=inverse_wts.squeeze()).astype(float)
             # mat1 = reduce(np.matmul,[(Xi_mat - self.gamma * U_mat).T, inverse_wts_mat, Xi_mat])
             mat1 = np.matmul(

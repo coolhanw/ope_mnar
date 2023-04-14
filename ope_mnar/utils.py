@@ -96,14 +96,16 @@ class MinMaxScaler():
     """Transform the features onto [0,1] using min and max value."""
 
     def __init__(self, min_val=None, max_val=None):
-        self.data_min_ = min_val
-        self.data_max_ = max_val
+        self.data_min_ = min_val if min_val is not None else -np.inf
+        self.data_max_ = max_val if max_val is not None else np.inf
 
     def fit(self, S):
         if self.data_min_ is None or np.min(self.data_min_) == -np.inf:
             self.data_min_ = np.nanmin(S, axis=0)
         if self.data_max_ is None or np.max(self.data_max_) == np.inf:
             self.data_max_ = np.nanmax(S, axis=0)
+        print('data_min', self.data_min_)
+        print('data_max', self.data_max_)
 
     def transform(self, S):
         return (S - self.data_min_) / (self.data_max_ - self.data_min_)
@@ -1306,6 +1308,7 @@ class SimpleReplayBuffer():
         self.all_states = []
         self.dropout_prob = []
         self.time_index = []
+        self.traj_index = []
         self.use_pred_prop = True if prop_info is not None else False
         
         for i, traj in trajs.items():
@@ -1317,6 +1320,7 @@ class SimpleReplayBuffer():
             self.rewards.append(traj[2][:num_transitions])
             self.next_states.append(traj[0][1:])
             self.time_index.append(list(range(num_transitions)))
+            self.traj_index.append([i] * num_transitions)
 
             if self.use_pred_prop:
                 self.dropout_prob.append(prop_info[i][0][:num_transitions])
@@ -1336,6 +1340,7 @@ class SimpleReplayBuffer():
         self.rewards = np.concatenate(self.rewards)
         self.dropout_prob = np.concatenate(self.dropout_prob)
         self.time_index = np.concatenate(self.time_index)
+        self.traj_index = np.concatenate(self.traj_index)
 
         self.initial_states = np.vstack(self.initial_states)
         self.initial_actions = np.array(self.initial_actions)
@@ -1359,6 +1364,11 @@ class SimpleReplayBuffer():
         
     def sample(self, batch_size):
         idx = np.random.choice(self.N, batch_size, replace = False)
+        return [self.states[idx], self.actions[idx], self.rewards[idx], self.next_states[idx], self.dropout_prob[idx]]
+    
+    def sample_trajs(self, num_trajs):
+        traj_idx = np.random.choice(self.num_trajs, num_trajs, replace = False)
+        idx = self.traj_index[np.isin(element=self.traj_index, test_elements=traj_idx)]
         return [self.states[idx], self.actions[idx], self.rewards[idx], self.next_states[idx], self.dropout_prob[idx]]
 
     def sample_init_states(self, batch_size):

@@ -134,6 +134,7 @@ figures/
 analysis/
 model/
 models/
+logs/
 data/
 .DS_Store
 .vscode/

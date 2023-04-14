@@ -220,7 +220,7 @@ class MWL(SimulationBase):
         
         if verbose: # self.verbose
             print('omega: min = ', np.min(est_omega), 'max = ', np.max(est_omega))
-            print("value_est_IS = {:.3f}\n".format(V_int_IS))
+            print("value_est = {:.3f}\n".format(V_int_IS))
 
         return V_int_IS
 
@@ -465,6 +465,10 @@ class DualDice(SimulationBase):
 
         for i in range(max_iter):
             transitions = self.replay_buffer.sample(batch_size)
+            
+            # num_sample_trajs = max(32, batch_size//self.max_T)
+            # transitions = self.replay_buffer.sample_trajs(num_trajs=num_sample_trajs)
+            
             states, actions, rewards, next_states, dropout_prob = transitions[:5]
             initial_states = self.initial_state_sampler.sample(batch_size)
             
@@ -486,7 +490,9 @@ class DualDice(SimulationBase):
             next_states = torch.FloatTensor(next_states).to(self.device)
             initial_states = torch.FloatTensor(initial_states).to(self.device)
             inverse_wts = torch.FloatTensor(inverse_wts).to(self.device)
+            
             inverse_wts_scale = self.replay_buffer.N / self.total_T_ipw
+            # inverse_wts_scale = len(states) / (num_sample_trajs * (self.max_T - self.burn_in))
             inverse_wts *= inverse_wts_scale
             
             nu_loss, zeta_loss = self._train_loss(
@@ -557,7 +563,7 @@ class DualDice(SimulationBase):
         
         if verbose:
             print('omega: min = ', np.min(est_omega), 'max = ', np.max(est_omega))
-            print("value_est_IS = {:.2f}".format(V_int_IS))
+            print("value_est = {:.3f}".format(V_int_IS))
         
         return V_int_IS
 
@@ -952,8 +958,8 @@ class NeuralDice(SimulationBase):
         V_int_IS = 1 / (1 - self.gamma) * np.sum(est_omega * rewards * inverse_wts) / self.total_T_ipw
         
         if verbose:
-            print('omega: min = ', np.min(est_omega), 'max = ', np.max(est_omega))
-            print("value_est_IS = {:.2f}".format(V_int_IS))
+            print('omega: min = {}, max = {}'.format(np.min(est_omega), np.max(est_omega)))
+            print("value_est = {:.3f}".format(V_int_IS))
 
         return V_int_IS
 

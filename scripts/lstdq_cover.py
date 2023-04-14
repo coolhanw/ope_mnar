@@ -136,7 +136,7 @@ if __name__ == '__main__':
                             num=dof + spline_degree +
                             1)  # take care of the boundary
     else:
-        knots = 'equivdist'  # 'equivdist', None
+        knots = 'equivdist'  # 'equivdist', 'quantile', None
     export_dir = os.path.join(
         log_dir,
         f'{env_class}_value_coverage{folder_suffix}/T_{T}_n_{n}_L_{dof}_gamma{gamma}_dropout{dropout_scheme}_{estimator}'

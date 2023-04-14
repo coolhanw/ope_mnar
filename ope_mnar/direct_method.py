@@ -228,7 +228,7 @@ class LSTDQ(SimulationBase):
                  horizon=None,
                  discount=0.8,
                  eval_env=None,
-                 scale="MinMax",
+                 scaler="MinMax",
                  product_tensor=True,
                  basis_scale_factor=1.,
                  **kwargs):
@@ -239,7 +239,7 @@ class LSTDQ(SimulationBase):
             horizon (int): the maximum length of trajectories
             discount (float): discount factor
             eval_env (gym.Env): dynamic environment to evaluate the policy, if not specified, use env
-            scale (str): scaler to transform state features onto [0,1], 
+            scaler (str): scaler to transform state features onto [0,1], 
                 select from "NormCdf", "Identity", "MinMax", or a path to a fitted scaler
             product_tensor (bool): if True, use product tensor to construct basis
             basis_scale_factor (float): a multiplier to basis in order to avoid extremely small value
@@ -251,20 +251,22 @@ class LSTDQ(SimulationBase):
                          discount=discount,
                          eval_env=eval_env)
 
-        # scaler to transform state features onto [0,1]
-        if scale == "NormCdf":
-            self.scaler = normcdf()
-        elif scale == "Identity":
-            self.scaler = iden()
-        elif scale == "MinMax":
-            self.scaler = MinMaxScaler(
-                min_val=self.env.low,
-                max_val=self.env.high) if env is not None else MinMaxScaler()
-        else:
-            # a path to a fitted scaler
-            assert os.path.exists(scale)
-            with open(scale, 'rb') as f:
-                self.scaler = pickle.load(f)
+        # # scaler to transform state features onto [0,1]
+        # if scaler == "NormCdf":
+        #     self.scaler = normcdf()
+        # elif scaler == "Identity":
+        #     self.scaler = iden()
+        # elif scaler == "MinMax":
+        #     self.scaler = MinMaxScaler(
+        #         min_val=self.env.low,
+        #         max_val=self.env.high) if env is not None else MinMaxScaler()
+        # elif os.path.exists(scaler):
+        #     # a path to a fitted scaler
+        #     with open(scaler, 'rb') as f:
+        #         self.scaler = pickle.load(f)
+        # else:
+        #     self.scaler = None
+        self.scaler = scaler
 
         self.product_tensor = product_tensor
         self.basis_scale_factor = basis_scale_factor
@@ -329,10 +331,11 @@ class LSTDQ(SimulationBase):
             for i in self.holdout_buffer.keys():
                 obs_concat.extend(self.holdout_buffer[i][0])
         obs_concat = np.array(obs_concat)
-        if not hasattr(self.scaler, 'data_min_') or not hasattr(
-                self.scaler, 'data_max_') or np.min(
-                    self.scaler.data_min_) == -np.inf or np.max(
-                        self.scaler.data_max_) == np.inf:
+        if not hasattr(self.scaler, 'data_min_') or \
+            not hasattr(self.scaler, 'data_max_') or \
+            np.min(self.scaler.data_min_) == -np.inf or \
+            np.max(self.scaler.data_max_) == np.inf:
+            print('Compute the min and max to be used for scaling')
             self.scaler.fit(obs_concat)
         scaled_obs_concat = self.scaler.transform(obs_concat)
         # print(np.quantile(a=scaled_obs_concat, q=[0.25,0.5,0.75], axis=0))
@@ -356,10 +359,10 @@ class LSTDQ(SimulationBase):
             self.knot = knots
         elif isinstance(knots, str) and knots == 'quantile':
             base_knots = np.quantile(a=scaled_obs_concat,
-                                     q=np.linspace(0, 1, L - d + 1),
+                                     q=np.linspace(0, 1, num=L - d + 1, endpoint=False),
                                      axis=0)  # (L+1, state_dim)
-            upper = base_knots.max(axis=0)
-            lower = base_knots.min(axis=0)
+            upper = scaled_obs_concat.max(axis=0) # base_knots.max(axis=0)
+            lower = scaled_obs_concat.min(axis=0) # base_knots.min(axis=0)
             # left_extrapo = np.linspace(lower - d * (upper - lower) / (L - d),
             #                            lower,
             #                            num=d + 1)[:-1]
@@ -393,6 +396,17 @@ class LSTDQ(SimulationBase):
             print(
                 "Building %d-th basis spline (total %d state dimemsion) which has %d basis "
                 % (i, self.state_dim, len(self.bspline[i])))
+            
+        # ## visualize the basis functions
+        # for i in range(self.state_dim):
+        #     fig, ax = plt.subplots()
+        #     for j in range(L):
+        #         sorted_x = np.linspace(start=0, stop=1, num=100)
+        #         y = self.bspline[i][j](sorted_x)
+        #         ax.plot(sorted_x, y, label=f'{j}-th basis')
+        #     ax.plot(self.knot.T[i], [0] * len(self.knot), marker='.', linestyle='dashed')
+        #     ax.legend()
+        #     plt.show()
 
         self.para = {}
         for i in range(self.num_actions):
@@ -741,6 +755,13 @@ class LSTDQ(SimulationBase):
             self.gamma * self.V(states=next_obs, policy=policy).reshape(-1, 1)
             - self.Q(states=obs, actions=actions).reshape(
                 -1, 1)) * Xi_mat  # (n, para_dim*num_actions)
+        
+        # residual = rewards + self.gamma * self.V(states=next_obs, policy=policy).reshape(-1, 1) - self.Q(states=obs, actions=actions).reshape(-1, 1)
+        # print('reward', np.mean(rewards))
+        # print('value', np.mean(self.V(states=next_obs, policy=policy)))
+        # print('Q value', np.mean(self.Q(states=obs, actions=actions)))
+        # print('residual_sq', np.mean(residual ** 2))
+        
         output = np.matmul(
             proj_td.T, proj_td)  # (para_dim*num_actions, para_dim*num_actions)
         self.Omega = output / self.total_T_ipw
@@ -757,7 +778,7 @@ class LSTDQ(SimulationBase):
                    L=10,
                    d=3,
                    knots=None,
-                   scale="MinMax",
+                   scaler=None,
                    product_tensor=True,
                    basis_scale_factor=1.,
                    grid_search=False,
@@ -771,20 +792,21 @@ class LSTDQ(SimulationBase):
             product_tensor (bool): if True, use product tensor to construct basis
             basis_scale_factor (float): a multiplier to basis in order to avoid extremely small value
         """
-        # scaler to transform state features onto [0,1]
-        if scale == "NormCdf":
-            self.scaler = normcdf()
-        elif scale == "Identity":
-            self.scaler = iden()
-        elif scale == "MinMax":
-            self.scaler = MinMaxScaler(
-                min_val=self.env.low,
-                max_val=self.env.high) if self.env is not None else MinMaxScaler()
-        else:
-            # a path to a fitted scaler
-            assert os.path.exists(scale)
-            with open(scale, 'rb') as f:
-                self.scaler = pickle.load(f)
+        # # scaler to transform state features onto [0,1]
+        # if scale == "NormCdf":
+        #     self.scaler = normcdf()
+        # elif scale == "Identity":
+        #     self.scaler = iden()
+        # elif scale == "MinMax":
+        #     self.scaler = MinMaxScaler(
+        #         min_val=self.env.low,
+        #         max_val=self.env.high) if self.env is not None else MinMaxScaler()
+        # else:
+        #     # a path to a fitted scaler
+        #     assert os.path.exists(scale)
+        #     with open(scale, 'rb') as f:
+        #         self.scaler = pickle.load(f)
+        self.scaler = scaler
 
         self.product_tensor = product_tensor
         self.basis_scale_factor = basis_scale_factor
@@ -1261,7 +1283,7 @@ class LSTDQ(SimulationBase):
         }
         return inference_summary
 
-    def validate_Q(self, grid_size=10, visualize=False, seed=None):
+    def validate_Q(self, grid_size=10, visualize=False, quantile=False, seed=None):
         self.grid = []
         self.idx2states = collections.defaultdict(list)
 
@@ -1276,6 +1298,11 @@ class LSTDQ(SimulationBase):
 
         states = np.vstack(obs_list)  # (total_T, S_dim)
         actions = np.vstack(action_list)  # (total_T, 1)
+
+        repeats_per_state = 5 # 1
+        states = np.repeat(a=states, repeats=repeats_per_state, axis=0)
+        actions = np.repeat(a=actions, repeats=repeats_per_state, axis=0)
+
         Q_est = self.Q(states=states, actions=actions).squeeze()
 
         # generate trajectories under the target policy
@@ -1315,21 +1342,24 @@ class LSTDQ(SimulationBase):
 
         discretized_states = np.zeros_like(states)
         for i in range(self.state_dim):
-            disc_bins = np.linspace(start=self.low[i] - 0.1,
-                                    stop=self.high[i] + 0.1,
-                                    num=grid_size + 1)
-            # disc_bins = np.quantile(a=states[:,i], q=np.linspace(0, 1, grid_size + 1))
-            # disc_bins[0] -= 0.1
-            # disc_bins[-1] += 0.1
+            if quantile:
+                disc_bins = np.quantile(a=states[:,i], q=np.linspace(0, 1, grid_size + 1))
+                disc_bins[0] -= 0.1
+                disc_bins[-1] += 0.1
+            else:
+                disc_bins = np.linspace(start=self.low[i] - 0.1,
+                                        stop=self.high[i] + 0.1,
+                                        num=grid_size + 1)                
             self.grid.append(disc_bins)
             discretized_states[:, i] = np.digitize(states[:, i],
                                                    bins=disc_bins) - 1
         discretized_states = list(map(tuple, discretized_states.astype('int')))
         for ds, s, a, q, qr in zip(discretized_states, states,
                                    actions.squeeze(), Q_est, Q_ref):
-            self.idx2states[ds].append(np.concatenate([s, [a], [q], [qr]]))
+            # only use the first 2 dimensions of discretized_states as key
+            self.idx2states[ds[:2]].append(np.concatenate([s, [a], [q], [qr]]))
 
-        # only for 2D state, binary action
+        # only for binary action
         Q_mat = np.zeros(shape=(self.num_actions, grid_size, grid_size))
         Q_ref_mat = np.zeros(shape=(self.num_actions, grid_size, grid_size))
         for k, v in self.idx2states.items():
@@ -1371,6 +1401,7 @@ class LSTDQ(SimulationBase):
                 ax[a,0].invert_yaxis()
                 ax[a,0].set_title(f'empirical Q (action={a})')
             plt.savefig('./output/Qfunc_heatplot.png')
+
 
 class FQE(SimulationBase):
     """
@@ -1509,10 +1540,10 @@ class FQE(SimulationBase):
                 self.knot = knots
             elif isinstance(knots, str) and knots == 'quantile':
                 base_knots = np.quantile(a=scaled_state_concat,
-                                        q=np.linspace(0, 1, L - d + 1),
+                                        q=np.linspace(0, 1, num=L - d + 1, endpoint=False),
                                         axis=0)  # (L+1, state_dim)
-                upper = base_knots.max(axis=0)
-                lower = base_knots.min(axis=0)
+                upper = scaled_state_concat.max(axis=0) # base_knots.max(axis=0)
+                lower = scaled_state_concat.min(axis=0) # base_knots.min(axis=0)
                 # left_extrapo = np.linspace(lower - d * (upper - lower) / (L - d),
                 #                         lower,
                 #                         num=d + 1)[:-1]
