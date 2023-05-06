@@ -52,20 +52,20 @@ parser.add_argument('--env',
                     choices=['linear2d', 'cartpole'])
 parser.add_argument('--method',
                     type=str,
-                    default='mwl',
+                    default='lstdq',
                     choices=['mwl', 'fqe', 'lstdq', 'dualdice', 'neuraldice', 'drl'])
-parser.add_argument('--max_episode_length', type=int, default=25)  # 10, 25
-parser.add_argument('--num_trajs', type=int, default=500)  # 250, 500
-parser.add_argument('--discount', type=float, default=0.9) # 0.8, 0.9
-parser.add_argument('--policy_id', type=str, default='3', choices=['0','1','2','3'])
+parser.add_argument('--max_episode_length', type=int, default=25)  # {10, 25}
+parser.add_argument('--num_trajs', type=int, default=500)  # {100, 500}
+parser.add_argument('--discount', type=float, default=0.9) # {0.8, 0.9}
+parser.add_argument('--policy_id', type=str, default='0', choices=['0','1','2','3'])
 parser.add_argument('--burn_in', type=int, default=0)
-parser.add_argument('--mc_size', type=int, default=1)  # 250
-parser.add_argument('--eval_policy_mc_size', type=int, default=50000)  # 10000
+parser.add_argument('--mc_size', type=int, default=25)  # 250
+parser.add_argument('--eval_policy_mc_size', type=int, default=10000)  # {10000, 50000}
 parser.add_argument('--eval_horizon', type=int, default=250)
 parser.add_argument('--dropout_scheme',
                     type=str,
-                    default='mnar.v0',
-                    choices=['0', 'mnar.v0', 'mar.v0'])
+                    default='0',
+                    choices=['0', 'mar.v0', 'mar.v3', 'mnar.v0', 'mnar.v1', 'mnar.v2', 'mnar.v3'])
 parser.add_argument('--dropout_rate', type=float, default=0.9)
 parser.add_argument(
     '--dropout_obs_count_thres',
@@ -86,10 +86,12 @@ parser.add_argument('--ipw',
 parser.add_argument('--estimate_missing_prob',
                     type=lambda x: (str(x).lower() == 'true'),
                     default=False)
+parser.add_argument('--parametric_missing_prob', 
+                    type=lambda x: (str(x).lower() == 'true'),
+                    default=False) # {False, True}
 parser.add_argument('--weight_curr_step',
                     type=lambda x: (str(x).lower() == 'true'),
                     default=True)
-# parser.add_argument('--env_model_type', type=str, default='linear')
 parser.add_argument('--vectorize_env',
                     type=lambda x: (str(x).lower() == 'true'),
                     default=True)
@@ -103,6 +105,7 @@ if __name__ == '__main__':
     T = args.max_episode_length
     n = args.num_trajs
     total_N = None
+    CI_alpha = 0.05
     if env_class == 'cartpole':
         # override
         T = 200
@@ -117,11 +120,16 @@ if __name__ == '__main__':
     ipw = args.ipw
     weight_curr_step = args.weight_curr_step  # if False, use survival probability
     estimate_missing_prob = args.estimate_missing_prob
+    parametric_missing_prob = args.parametric_missing_prob
     eval_policy_mc_size = args.eval_policy_mc_size
     eval_horizon = args.eval_horizon
     eval_seed = 123
     prob_lbound = 1e-2
     vis_quantile = True # only for visualization purpose
+    
+    # (optional) sensitivity analysis
+    misspec_IV = False # {True, False}
+    misspec_MOD = False # {True, False}
 
     # model configuration
     omega_func_class = args.omega_func_class  # marginalized density ratio
@@ -129,26 +137,25 @@ if __name__ == '__main__':
     default_scaler = 'MinMax'  # 'NormCdf', 'MinMax'
     if ope_method == 'lstdq':
         Q_func_class = 'spline'  # override
-    if omega_func_class in ['spline', 'expo_linear'
-                            ] or Q_func_class == 'spline':
+    if omega_func_class in ['spline', 'expo_linear'] or Q_func_class == 'spline':
         adaptive_dof = False
         # spline related configuration
-        basis_scale_factor = 100  # 1, 100
-        spline_degree = 2 # 3
+        spline_degree = 3 # 2, 3
         product_tensor = True # True
+        # basis_scale_factor = 100 # 1, 100
+        # ridge_factor = 1e-3  # 1e-3, 1e-6
         if env_class == 'linear2d':
             if adaptive_dof:
                 dof = max(spline_degree + 1, int(
                     ((n * T)**(3 / 7))**(1 / 2)))  # degree of freedom
             else:
-                dof = 7
-        elif env_class == 'cartpole':
+                dof = 6 #7
+        elif env_class == 'cartpole': 
             if adaptive_dof:
                 dof = max(spline_degree + 1, int(
                     ((n * T)**(3 / 7))**(1 / 4)))  # degree of freedom
             else:
                 dof = spline_degree + 1 # 4
-        ridge_factor = 1e-3  # 1e-3, 1e-6
 
         # knots = np.linspace(start=-spline_degree / (dof - spline_degree),
         #                     stop=1 + spline_degree / (dof - spline_degree),
@@ -159,20 +166,46 @@ if __name__ == '__main__':
     dropout_model_type = 'linear'
     instrument_var_index = None
     mnar_y_transform = None
-    bandwidth_factor = None
+    bandwidth_factor = 2.5 # None
+    psi_true = None  # 1.5, None
     if dropout_scheme == '0':
         missing_mechanism = None
     elif dropout_scheme.startswith('mnar'):
         missing_mechanism = 'mnar'
-        instrument_var_index = 1
-        if env_class == 'linear2d':
-            if dropout_scheme == 'mnar.v0':
+        if env_class.startswith('linear2d'):
+            state_dim = 2
+            instrument_var_index = 1 if not misspec_IV else 0 # 1
+            
+            if not misspec_MOD:
+                if dropout_scheme in ['mnar.v0', 'mnar.v1', 'mnar.v3']:
+                    psi_true = 1.5
+                    # inputs is a concatenation of [next_states, rewards]
+                    def mnar_y_transform(inputs):
+                        rewards = inputs[:,[state_dim]]
+                        return rewards
+                elif dropout_scheme == 'mnar.v2':
+                    psi_true = [1, 0.1]
+                    def mnar_y_transform(inputs):
+                        rewards = inputs[:,[state_dim]]
+                        return np.hstack([rewards, rewards ** 2])
+            else:
+                if dropout_scheme in ['mnar.v0', 'mnar.v1']:
+                    def mnar_y_transform(inputs):
+                        return inputs
+                elif dropout_scheme == 'mnar.v2':
+                    def mnar_y_transform(inputs):
+                        rewards = inputs[:,[state_dim]]
+                        return rewards
+
+            if dropout_scheme in ['mnar.v0','mnar.v3']:
                 bandwidth_factor = 7.5
             elif dropout_scheme == 'mnar.v1':
-                bandwidth_factor = 2.5
+                bandwidth_factor = 2 # 2.5
+            elif dropout_scheme == 'mnar.v2':
+                bandwidth_factor = 7.5 # 2.5
     else:
         missing_mechanism = 'mar'
-    psi_true = None  # 1.5, None
+        parametric_missing_prob = True # override
     if missing_mechanism and missing_mechanism.lower() == 'mnar':
         initialize_with_psiT = False
     if missing_mechanism is None:
@@ -184,11 +217,16 @@ if __name__ == '__main__':
     if not ipw:
         weighting_method = 'cc'
     elif ipw and estimate_missing_prob:
-        weighting_method = 'ipw_propF'
+        weighting_method = 'ipw_para_prop' if parametric_missing_prob else 'ipw_semipara_prop'
     elif ipw and not estimate_missing_prob:
         weighting_method = 'ipw_propT'
+    if dropout_scheme.startswith('mnar') and estimate_missing_prob:
+        if misspec_IV:
+            weighting_method += '_misIV'
+        if misspec_MOD:
+            weighting_method += '_misMOD'
     folder_suffix = ''
-    folder_suffix += f'_missing{dropout_rate}'  # add here
+    # folder_suffix += f'_missing{dropout_rate}'  # add here
     export_dir = os.path.join(
         log_dir,
         f'{env_class}{folder_suffix}/T{T}_n{n}_policy{args.policy_id}_gamma{gamma}_dropout_{dropout_scheme}_{weighting_method}'
@@ -196,16 +234,18 @@ if __name__ == '__main__':
     pathlib.Path(export_dir).mkdir(parents=True, exist_ok=True)
 
     print('Configuration:')
-    print(f'T : {T}')
-    print(f'n : {n}')
-    print(f'total_N : {total_N}')
-    print(f'gamma : {gamma}')
-    print(f'dropout_scheme : {dropout_scheme}')
-    print(f'ipw : {ipw}')
-    print(f'estimate_missing_prob : {estimate_missing_prob}')
-    print(f'eval_policy_mc_size : {eval_policy_mc_size}')
-    print(f'eval_horizon : {eval_horizon}')
-    print(f'Logged to folder: {export_dir}')
+    print('T:', T)
+    print(f'n:', n)
+    print(f'total_N:', total_N)
+    print(f'gamma:', gamma)
+    print('ope_method:', ope_method)
+    print(f'dropout_scheme:', dropout_scheme)
+    print(f'ipw:', ipw)
+    print(f'estimate_missing_prob:', estimate_missing_prob)
+    print(f'eval_policy_mc_size:', eval_policy_mc_size)
+    print(f'eval_horizon:', eval_horizon)
+    print(f'Logged to folder:', export_dir)
+    print('')
 
     # environment, initial states and policy configuration
     np.random.seed(seed=eval_seed)
@@ -218,8 +258,8 @@ if __name__ == '__main__':
         default_key = 'a'
         spline_scaler = MinMaxScaler(min_val=low, max_val=high)
         # override
-        basis_scale_factor = 100
-        ridge_factor = 1e-3
+        basis_scale_factor = 1 # 100
+        ridge_factor = 1e-5 # 1e-5 # 1e-3
 
         if vectorize_env:
             env = Linear2dVectorEnv(
@@ -425,7 +465,7 @@ if __name__ == '__main__':
                 S_inits=eval_S_inits_dict[k],
                 eval_size=eval_policy_mc_size,
                 eval_horizon=eval_horizon,
-                repeats=int(2e5) // eval_policy_mc_size,
+                repeats=int(2e5) // eval_policy_mc_size, # int(2e5) // eval_policy_mc_size
             )
             true_value_dict[k] = { 
                 'initial_states': eval_S_inits_dict[k],
@@ -551,9 +591,9 @@ if __name__ == '__main__':
             # estimate dropout probability
             if estimate_missing_prob:
                 model_suffix = suffix
-                pathlib.Path(os.path.join(export_dir,
-                                          'models')).mkdir(parents=True,
-                                                           exist_ok=True)
+                # pathlib.Path(os.path.join(export_dir,
+                #                           'models')).mkdir(parents=True,
+                #                                            exist_ok=True)
                 print(f'Fit dropout model ({missing_mechanism})')
                 fit_dropout_start = time.time()
                 agent.train_dropout_model(
@@ -565,11 +605,11 @@ if __name__ == '__main__':
                     export_dir=os.path.join(export_dir, 'models'),
                     pkl_filename=None, # f'dropout_model_{dropout_model_type}_T{T}_n{n}_gamma{gamma}_{model_suffix}.pkl'
                     seed=seed,
-                    include_reward=True,
+                    include_reward=False, # [True, False], if True, will override function mnar_y_transform()
                     instrument_var_index=instrument_var_index,
                     mnar_y_transform=mnar_y_transform,
-                    psi_init=None if missing_mechanism == 'mnar'
-                    and not initialize_with_psiT else psi_true,
+                    psi_init=None if missing_mechanism == 'mnar' and not initialize_with_psiT else psi_true,
+                    parametric=parametric_missing_prob,
                     bandwidth_factor=bandwidth_factor,
                     verbose=True)
                 print(f'Estimate dropout propensities')
@@ -663,8 +703,7 @@ if __name__ == '__main__':
                         d=spline_degree,
                         knots=knots,
                         product_tensor=product_tensor,
-                        basis_scale_factor=
-                        3,  # to ensure the input lies in a reasonable range, otherwise the training is not as stable
+                        basis_scale_factor=3,  # to ensure the input lies in a reasonable range, otherwise the training is not as stable
                         lr=5e-3,
                         batch_size=256,
                         max_iter=3000, # 2000
@@ -846,8 +885,8 @@ if __name__ == '__main__':
                 print("Getting value estimate...\n")
                 value_est = agent.get_value(
                     S_inits=eval_S_inits_dict[initial_key])
+                print('value est: {:.3f}'.format(value_est))
                 if mc_size <= 2:
-                    print('value est: {:.3f}'.format(value_est))
                     agent.validate_Q(grid_size=10, visualize=True, quantile=vis_quantile)
             elif ope_method == 'lstdq':
                 assert Q_func_class == 'spline'
@@ -868,14 +907,15 @@ if __name__ == '__main__':
                 print("Getting value estimate...")
                 value_est = agent.get_value(
                     S_inits=eval_S_inits_dict[initial_key])
-                print("Getting value interval estimate...\n")
+                print("Getting value interval estimate...")
                 value_interval_est = agent.get_value_interval(
-                    S_inits=eval_S_inits_dict[initial_key], alpha=0.05)
+                    S_inits=eval_S_inits_dict[initial_key], alpha=CI_alpha)
+                print('value true: {:.3f}'.format(true_value_int))
+                print('value est: {:.3f}'.format(value_est))
+                print('value interval:', value_interval_est)
                 if mc_size <= 2:
-                    print('value true: {:.3f}'.format(true_value_int))
-                    print('value est: {:.3f}'.format(value_est))
-                    print('value interval:', value_interval_est)
                     agent.validate_Q(grid_size=10, visualize=True, seed=seed, quantile=vis_quantile)  # sanity check
+                print() # delimiter
             elif ope_method == 'mql':
                 agent.estimate_Q(target_policy=DiscretePolicy(
                     policy_func=policy, num_actions=num_actions),
@@ -977,7 +1017,7 @@ if __name__ == '__main__':
                 print("Getting value estimate...")
                 value_est = agent.get_value()
                 print("Getting value interval estimate...\n")
-                value_interval_est = agent.get_value_interval(alpha=0.05)
+                value_interval_est = agent.get_value_interval(alpha=CI_alpha)
                 if mc_size <= 2:
                     print('value est: {:.3f}'.format(value_est))
                     print('value interval: {}\n'.format(value_interval_est))
@@ -1087,6 +1127,10 @@ if __name__ == '__main__':
                     np.mean(value_est_list) - true_value_int),
                 'RMSE: {:.3f}'.format(
                     np.mean((np.array(value_est_list) - true_value_int)**2)))
+            if ope_method in ['lstdq', 'drl']:
+                ecp = np.mean([l <= true_value_int <= u for l, u in value_interval_list])
+                al = np.mean([u - l for l, u in value_interval_list])
+                print('ECP: {:.3f}'.format(ecp), 'AL: {:.3f}'.format(al))
 
         value_est_summary[initial_key] = {
             'initial_states': eval_S_inits_dict[initial_key],

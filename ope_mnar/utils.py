@@ -14,6 +14,7 @@ import gym
 from gym.spaces import Box, Discrete
 from gym.vector import VectorEnv
 from gym.utils import seeding
+import matplotlib.pyplot as plt
 
 __all__ = [
     'sigmoid', 'constant_fn', 'normcdf', 'iden', 'MinMaxScaler', 'MLPModule',
@@ -114,7 +115,7 @@ class MinMaxScaler():
         return S * (self.data_max_ - self.data_min_) + self.data_min_
 
 
-class ExpoTiltingClassifierMNAR():
+class SemiparamMNARClassifier():
     """Implement the semiparametric IPW method for nonignorable missingness.
     
     Reference: Shao, J., & Wang, L. (2016). Semiparametric inverse propensity weighting for nonignorable missing data.
@@ -247,7 +248,7 @@ class ExpoTiltingClassifierMNAR():
 
         return estEq
 
-    def estimate_psi(self,
+    def _estimate_psi(self,
                        L,
                        z,
                        u,
@@ -327,10 +328,6 @@ class ExpoTiltingClassifierMNAR():
                     print(f'estEq(psi_init): {estEq_sq(psi_init)}')
                     print(f'estEq({psi_hat.x}): {estEq_sq(psi_hat.x)}')
             psi_hat = psi_hat_list[np.argmin(estEq_sq_list)]
-            # expg_hat = self.expg_func(u=u, psi=-0.5, bandwidth=bandwidth)
-            # psi_y = np.clip(np.dot(y, (-0.5, )), -709.78, 709.78)  # (k,)
-            # pi_hat = 1 / (1 + expg_hat * np.exp(psi_y))
-            # logit = np.log(expg_hat) + psi_y
             expg_hat = self.expg_func(u=u,
                                       psi=psi_hat,
                                       bandwidth=bandwidth)
@@ -339,7 +336,7 @@ class ExpoTiltingClassifierMNAR():
             logit = np.log(expg_hat) + psi_y
             if verbose:
                 print(
-                    f'expg_hat (psi={round(psi_hat[0],3)})',
+                    f'expg_hat (psi={np.around(psi_hat,decimals=3)})',
                     '0.0/0.25/0.5/0.75/1.0 quantile:{0:.2f}/{1:.2f}/{2:.2f}/{3:.2f}/{4:.2f}'
                     .format(np.nanmin(expg_hat),
                             np.nanquantile(expg_hat, 0.25),
@@ -347,19 +344,18 @@ class ExpoTiltingClassifierMNAR():
                             np.nanquantile(expg_hat,
                                            0.75), np.nanmax(expg_hat)))
                 print(
-                    f'logit (psi={round(psi_hat[0],3)})',
+                    f'logit (psi={np.around(psi_hat,decimals=3)})',
                     '0.0/0.25/0.5/0.75/1.0 quantile:{0:.2f}/{1:.2f}/{2:.2f}/{3:.2f}/{4:.2f}'
                     .format(np.nanmin(logit), np.nanquantile(logit, 0.25),
                             np.nanquantile(logit, 0.5),
                             np.nanquantile(logit, 0.75), np.nanmax(logit)))
                 print(
-                    f'pi_hat (psi={round(psi_hat[0],3)})',
+                    f'pi_hat (psi={np.around(psi_hat,decimals=3)})',
                     '0.0/0.25/0.5/0.75/1.0 quantile:{0:.2f}/{1:.2f}/{2:.2f}/{3:.2f}/{4:.2f}'
                     .format(np.nanmin(pi_hat), np.nanquantile(pi_hat, 0.25),
                             np.nanquantile(pi_hat, 0.5),
                             np.nanquantile(pi_hat, 0.75), np.nanmax(pi_hat)))
-                print(f'estimating equation (psi={round(psi_hat[0],3)}):')
-                print(self.estEq((psi_hat[0], )))
+                print(f'estimating equation (psi={np.around(psi_hat,decimals=3)}):', self.estEq(psi_hat))
             _ = gc.collect()
             return psi_hat
         else:
@@ -433,20 +429,16 @@ class ExpoTiltingClassifierMNAR():
                 print(
                     f'step2, estEq({psi_hat_step2}): {step2_func(psi_hat_step2)}'
                 )
-            # expg_hat = self.expg_func(u=u, psi=-0.5, bandwidth=bandwidth)
-            # psi_y = np.clip(np.dot(y, (-0.5, )), -709.78, 709.78)  # (k,)
-            # logit = np.log(expg_hat) + psi_y
-            # pi_hat = 1 / (1 + expg_hat * np.exp(psi_y))
             expg_hat = self.expg_func(u=u,
                                       psi=psi_hat_step2,
                                       bandwidth=bandwidth)
             psi_y = np.clip(np.dot(y, psi_hat_step2), -709.78,
                               709.78)  # (k,)
-            logit = np.log(expg_hat) + psi_y
+            logit = np.log(np.clip(expg_hat, a_min=1e-8, a_max=None)) + psi_y
             pi_hat = 1 / (1 + expg_hat * np.exp(psi_y))
             if verbose:
                 print(
-                    f'expg_hat (psi={round(psi_hat_step2[0],3)})',
+                    f'expg_hat (psi={np.around(psi_hat_step2,decimals=3)})',
                     '0.0/0.25/0.5/0.75/1.0 quantile:{0:.2f}/{1:.2f}/{2:.2f}/{3:.2f}/{4:.2f}'
                     .format(np.nanmin(expg_hat),
                             np.nanquantile(expg_hat, 0.25),
@@ -454,35 +446,36 @@ class ExpoTiltingClassifierMNAR():
                             np.nanquantile(expg_hat,
                                            0.75), np.nanmax(expg_hat)))
                 print(
-                    f'logit (psi={round(psi_hat_step2[0],3)})',
+                    f'logit (psi={np.around(psi_hat_step2,decimals=3)})',
                     '0.0/0.25/0.5/0.75/1.0 quantile:{0:.2f}/{1:.2f}/{2:.2f}/{3:.2f}/{4:.2f}'
                     .format(np.nanmin(logit), np.nanquantile(logit, 0.25),
                             np.nanquantile(logit, 0.5),
                             np.nanquantile(logit, 0.75), np.nanmax(logit)))
                 print(
-                    f'pi_hat (psi={round(psi_hat_step2[0],3)})',
+                    f'pi_hat (psi={np.around(psi_hat_step2,decimals=3)})',
                     '0.0/0.25/0.5/0.75/1.0 quantile:{0:.2f}/{1:.2f}/{2:.2f}/{3:.2f}/{4:.2f}'
                     .format(np.nanmin(pi_hat), np.nanquantile(pi_hat, 0.25),
                             np.nanquantile(pi_hat, 0.5),
                             np.nanquantile(pi_hat, 0.75), np.nanmax(pi_hat)))
                 print(
-                    f'estimating equation (psi={round(psi_hat_step2[0],3)}):'
+                    f'estimating equation (psi={np.around(psi_hat_step2,decimals=3)}):',
+                    np.mean(self.estEq_full(psi_hat_step2), axis=0)
                 )
-                print(np.mean(self.estEq_full((psi_hat_step2[0], )), axis=0))
 
                 #######################
                 # # for debug purpose
+                # dim_idx = 0
                 # psi_grid = np.linspace(start=-10, stop=10, num=50)
                 # step2_func_grid = []
                 # for g in psi_grid:
                 #     step2_func_grid.append(step2_func((g,)))
                 # plt.plot(psi_grid, np.array(step2_func_grid))
-                # plt.axvline(psi_hat_step2[0], color='red')
+                # plt.axvline(psi_hat_step2[dim_idx], color='red')
                 # plt.xlabel('psi')
                 # plt.ylabel('objective func')
-                # # plt.title(f'psi hat={round(psi_hat[0],3)}')
+                # # plt.title(f'psi hat={round(psi_hat[dim_idx],3)}')
                 # plt.tight_layout()
-                # plt.savefig(os.path.expanduser(f'~/mnar_obj_func_psi_{round(psi_hat_step2[0],3)}.png'))
+                # plt.savefig(os.path.expanduser(f'~/mnar_obj_func_psi_{round(psi_hat_step2[dim_idx],3)}.png'))
                 # plt.close()
                 #######################
 
@@ -495,13 +488,13 @@ class ExpoTiltingClassifierMNAR():
             u,
             y,
             delta,
-            bandwidth=None,
             seed=None,
             psi_init=None,
             bounds=None,
             verbose=True,
+            bandwidth=None,
             bandwidth_factor=1.5):
-        """A wrapper function of estimate_psi()
+        """Entrance function for fitting the dropout propensity model
         
         Args:
             L (int): number of bins to discretize the instrument variable
@@ -509,15 +502,12 @@ class ExpoTiltingClassifierMNAR():
             u (np.ndarray): dimension (k,u_dim)
             y (np.ndarray): dimension (k,y_dim)
             delta (np.ndarray): dimension (k,1)
-            bandwidth (np.ndarray): dimension (k,u_dim,u_dim)
             seed (int): random seed to general initial values
             psi_init (int or np.ndarray): initial value of psi, only used in simulation
             bounds (tuple): bounds for value search
+            bandwidth (np.ndarray): dimension (k,u_dim,u_dim)
             bandwidth_factor (float): the constant used in bandwidth calculation
             verbose (bool): If True, print intermediate results
-            
-        Returns:
-
         """
         self.L = L
         if len(u.shape) == 1:
@@ -556,7 +546,7 @@ class ExpoTiltingClassifierMNAR():
                             u[z == i], rowvar=False) * np.square(
                                 np.sum(z == i)**(-1 / 3))
             # print(self.bandwidth_dict)
-        self.psi_hat = self.estimate_psi(L=L,
+        self.psi_hat = self._estimate_psi(L=L,
                                              z=z,
                                              u=u,
                                              y=y,
@@ -606,6 +596,265 @@ class ExpoTiltingClassifierMNAR():
             log_dict = pickle.load(f)
             self.L = log_dict.get('L', None)
             self.psi_hat = log_dict.get('psi_hat', None)
+
+class ParamMNARClassifier():
+    """Implement the parametric IPW method for nonignorable missingness.
+    
+    Reference: Wang, S., Shao, J., & Kim, J. K. (2014). An instrumental variable approach for identification and 
+    estimation with nonignorable nonresponse. Statistica Sinica, 1097-1116.
+
+    Note: This implementation is only compatible to discrete instrumental variable Z with L levels
+    """
+
+    def _create_estEq_func(
+            self,
+            z,
+            u,
+            y,
+            delta,
+            aggregate='mean'):
+        """
+        Args:
+            z (np.ndarray): dimension (k,1)
+            u (np.ndarray): dimension (k,u_dim)
+            y (np.ndarray): dimension (k,y_dim)
+            delta (np.ndarray): dimension (k,1)
+            aggregate (str): if 'mean', then aggregate by taking average
+
+        Returns:
+            estEq (callable)
+        """
+
+        y = np.nan_to_num(y, nan=0)
+        cons_u_y = np.hstack([np.ones(shape=(self.n, 1)), u, y])
+        delta = delta.squeeze()
+        z = z.squeeze()
+
+        def estEq(theta):
+            """
+            Args:
+                theta (np.ndarray): dimension (y_dim,)
+            """
+            pi = 1 / (1 + np.exp(np.clip(np.dot(cons_u_y, theta), -709.78, 709.78)))  # (k,)
+            pi[delta == 0] = 1.
+            assert delta.shape == pi.shape
+            v = delta / pi - 1
+            z_onehot = np.eye(self.L)[z - 1]
+            comp_mat = np.hstack([z_onehot, u]) * v.reshape(-1, 1)
+            if aggregate == 'mean':
+                return np.nanmean(comp_mat, axis=0)
+            elif aggregate is None:
+                return comp_mat
+
+        return estEq
+
+    def _estimate_theta(
+            self,
+            z,
+            u,
+            y,
+            delta,
+            seed=None,
+            bounds=None,
+            verbose=True):
+        """Estimate theta. theta=(theta_0, theta_u, theta_y)
+        
+        Args:
+            z (np.ndarray): dimension (k,1)
+            u (np.ndarray): dimension (k,u_dim)
+            y (np.ndarray): dimension (k,y_dim)
+            delta (np.ndarray): dimension (k,1)
+            seed (int): random seed to general initial values
+            bounds (tuple): bounds for value search
+            verbose (bool): If True, print intermediate results
+            
+        Returns:
+            theta_hat (np.ndarray)
+        """
+        u = u.reshape(-1, self.u_dim)
+        y = y.reshape(-1, self.y_dim)
+        if len(delta.shape) == 1:
+            delta = delta.reshape(-1, 1)
+        cons_u_y = np.hstack([np.ones(shape=(self.n, 1)), u, y])
+        
+        # the GMM estimator of theta can be obtained using a two-step algorithm
+        self.estEq_full = self._create_estEq_func(
+            z=z,
+            u=u,
+            y=y,
+            delta=delta,
+            aggregate=None)
+        
+        def step1_func(theta):
+            M_mean = np.mean(self.estEq_full(theta), axis=0)
+            # _ = gc.collect()
+            return np.matmul(M_mean.T, M_mean)
+        
+        theta_hat_list = []
+        estEq_sq_list = []
+        # try several initial values to avoid local optimum
+        reps = 5
+        theta_init_list = np.random.normal(size=(reps, self.theta_dim))
+        for i in range(reps):
+            theta_init = theta_init_list[i].reshape((self.theta_dim, ))
+            optresult1 = minimize(
+                fun=step1_func,
+                x0=theta_init,
+                bounds=bounds,
+                method='Nelder-Mead' # 'L-BFGS-B'
+            )
+            theta_hat_step1 = optresult1.x
+            theta_hat_list.append(theta_hat_step1)
+            estEq_sq_list.append(step1_func(theta_hat_step1))
+            if verbose:
+                print(f'step1, theta_init: {theta_init}')
+                print(
+                    f'step1, estEq(theta_init): {step1_func(theta_init)}')
+                print(
+                    f'step1, estEq({theta_hat_step1}): {step1_func(theta_hat_step1)}'
+                )
+        theta_hat_step1 = theta_hat_list[np.argmin(estEq_sq_list)]
+        M = self.estEq_full(theta_hat_step1)
+        W_inv_hat = (1 / M.shape[0]) * np.matmul(M.T, M)
+        W_hat = np.linalg.inv(W_inv_hat)
+
+        def step2_func(theta):
+            Q = reduce(np.matmul, [
+                np.mean(self.estEq_full(theta), axis=0).reshape(1, -1),
+                W_hat,
+                np.mean(self.estEq_full(theta), axis=0).reshape(-1, 1)
+            ])
+            _ = gc.collect()
+            return Q.squeeze()
+
+        theta_init = theta_hat_step1
+        optresult2 = minimize(fun=step2_func,
+                                x0=theta_init,
+                                bounds=bounds,
+                                method='L-BFGS-B')
+        theta_hat_step2 = optresult2.x
+        if verbose:
+            print(f'step2, theta_init: {theta_init}')
+            print(f'step2, estEq(theta_init): {step2_func(theta_init)}')
+            print(
+                f'step2, estEq({theta_hat_step2}): {step2_func(theta_hat_step2)}'
+            )
+
+        logit = np.clip(np.dot(cons_u_y, theta_hat_step2), -709.78, 709.78)
+        pi_hat = 1 / (1 + np.exp(logit))
+
+        if verbose:
+            print(
+                f'logit (theta={np.around(theta_hat_step2,decimals=3)})',
+                '0.0/0.25/0.5/0.75/1.0 quantile:{0:.2f}/{1:.2f}/{2:.2f}/{3:.2f}/{4:.2f}'
+                .format(np.nanmin(logit), np.nanquantile(logit, 0.25),
+                        np.nanquantile(logit, 0.5),
+                        np.nanquantile(logit, 0.75), np.nanmax(logit)))
+            print(
+                f'pi_hat (theta={np.around(theta_hat_step2,decimals=3)})',
+                '0.0/0.25/0.5/0.75/1.0 quantile:{0:.2f}/{1:.2f}/{2:.2f}/{3:.2f}/{4:.2f}'
+                .format(np.nanmin(pi_hat), np.nanquantile(pi_hat, 0.25),
+                        np.nanquantile(pi_hat, 0.5),
+                        np.nanquantile(pi_hat, 0.75), np.nanmax(pi_hat)))
+            print(
+                f'estimating equation (theta={np.around(theta_hat_step2,decimals=3)}):', 
+                np.mean(self.estEq_full(theta_hat_step2), axis=0)
+            )
+
+            #######################
+            # # for debug purpose
+            # dim_idx = 0
+            # theta_grid = np.linspace(start=-10, stop=10, num=50)
+            # step2_func_grid = []
+            # for g in theta_grid:
+            #     step2_func_grid.append(step2_func((g,)))
+            # plt.plot(theta_grid, np.array(step2_func_grid))
+            # plt.axvline(theta_hat_step2[dim_idx], color='red')
+            # plt.xlabel('theta')
+            # plt.ylabel('objective func')
+            # # plt.title(f'theta hat={round(theta_hat[dim_idx],3)}')
+            # plt.tight_layout()
+            # plt.savefig(os.path.expanduser(f'~/mnar_obj_func_theta_{round(theta_hat_step2[dim_idx],3)}.png'))
+            # plt.close()
+            #######################
+
+        _ = gc.collect()
+        return theta_hat_step2
+
+    def fit(self,
+            L,
+            z,
+            u,
+            y,
+            delta,
+            seed=None,
+            bounds=None,
+            verbose=True):
+        """Entrance function for fitting the dropout propensity model
+        
+        Args:
+            L (int): number of bins to discretize the instrument variable
+            z (np.ndarray): dimension (k,1)
+            u (np.ndarray): dimension (k,u_dim)
+            y (np.ndarray): dimension (k,y_dim)
+            delta (np.ndarray): dimension (k,1)
+            seed (int): random seed to general initial values
+            bounds (tuple): bounds for value search
+            verbose (bool): If True, print intermediate results
+        """
+        if len(u.shape) == 1:
+            u = u.reshape(-1, 1)
+        if len(y.shape) == 1:
+            y = y.reshape(-1, 1)
+        if len(delta.shape) == 1:
+            delta = delta.reshape(-1, 1)
+        self.n = len(y)
+        self.L = L
+        self.u_dim = u.shape[1]
+        if len(y.shape) == 1 or (len(y.shape) == 2 and y.shape[1] == 1):
+            self.y_dim = 1
+        else:
+            self.y_dim = y.shape[1]
+        assert self.L >= 1 + self.y_dim, "unidentifiable"
+        self.theta_dim = 1 + self.u_dim + self.y_dim
+
+        self.theta_hat = self._estimate_theta(
+            z=z,
+            u=u,
+            y=y,
+            delta=delta,
+            seed=seed,
+            bounds=bounds,
+            verbose=verbose)
+        self.psi_hat = self.theta_hat[-self.y_dim:]
+
+    def predict_proba(self, u, z, y):
+        """Estimate pi (the probability of being observed)
+        
+        Args:
+            u (np.ndarray): dimension (k,u_dim)
+            z (np.ndarray): dimension (k,1)
+            y (np.ndarray): dimension (k,y_dim)
+            
+        Returns:
+            pi_est (np.ndarray)
+        """
+        u = u.reshape(-1, self.u_dim)
+        y = y.reshape(-1, self.y_dim)
+        cons_u_y = np.hstack([np.ones(shape=(len(u), 1)), u, y])
+        logit = np.clip(np.dot(cons_u_y, self.theta_hat), -709.78, 709.78)
+        pi_est = 1 / (1 + np.exp(logit))
+        return pi_est
+
+    def save(self, filename):
+        with open(filename, 'wb') as f:
+            pickle.dump({'L': self.L, 'theta_hat': self.theta_hat}, f)
+
+    def load(self, filename):
+        with open(filename, 'wb') as f:
+            log_dict = pickle.load(f)
+            self.L = log_dict.get('L', None)
+            self.theta_hat = log_dict.get('theta_hat', None)
 
 
 class SimEnv(gym.Env):

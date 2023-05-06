@@ -29,7 +29,8 @@ from utils import (
     iden,
     MinMaxScaler,
     MLPModule,
-    ExpoTiltingClassifierMNAR,
+    SemiparamMNARClassifier,
+    ParamMNARClassifier,
     SimpleReplayBuffer
 )
 
@@ -1043,10 +1044,11 @@ class SimulationBase(object):
                             export_dir=None,
                             pkl_filename="dropout_model.pkl",
                             seed=None,
-                            include_reward=True,
+                            include_reward=False,
                             instrument_var_index=None,
                             mnar_y_transform=None,
                             psi_init=None,
+                            parametric=False,
                             bandwidth_factor=1.5,
                             verbose=True,
                             **kwargs):
@@ -1066,7 +1068,8 @@ class SimulationBase(object):
             include_reward (bool): if True, include reward as feature in dropuot model
             instrument_var_index (int): index of the instrument variable
             mnar_y_transform (callable): input next_obs and reward, output Y term for the mnar dropout model 
-            psi_init (float): initial value for psi in MNAR estimation
+            psi_init (np.ndarray): initial value for psi in MNAR estimation
+            parametric (bool): if True, use parametric model to estimate the missing propensity
             bandwidth_factor (float): the constant used in bandwidth calculation
             kwargs (dict): passed to model
         """
@@ -1338,19 +1341,19 @@ class SimulationBase(object):
                 joblib.dump(value=self.fitted_dropout_model,
                             filename=self.dropout_model_filename,
                             compress=3)
-        else:
+        elif missing_mechanism == 'mnar':
             # specify y_arr
             if include_reward:
                 print('use the reward as outcome')
                 y_arr = rewards # use reward as outcome
-            elif mnar_nextobs_arr is None:
+            elif mnar_nextobs_arr is not None:
+                y_arr = mnar_nextobs_arr
+            else:
                 if mnar_y_transform is not None:
                     y_arr = mnar_y_transform(
                         np.hstack([unscaled_next_states, rewards.reshape(-1, 1)]))
                 else:
                     y_arr = next_states # already scaled if set scale_obs=True
-            else:
-                y_arr = mnar_nextobs_arr
             if len(y_arr.shape) == 1 or y_arr.shape[1] == 1:
                 y_dim = 1
             else:
@@ -1406,7 +1409,6 @@ class SimulationBase(object):
                 self.instrument_disc_bins = bins_nonoverlap
                 L = len(self.instrument_disc_bins) - 1
                 assert L >= y_dim + 1
-                print(f'discretize Z into L={L} bins')
                 # handle the boundary
                 self.instrument_disc_bins[0] -= 0.1
                 self.instrument_disc_bins[-1] += 0.1
@@ -1419,10 +1421,10 @@ class SimulationBase(object):
                 z_arr = mnar_instrument_arr.reshape(
                     -1)  # assume Z is already discretized
                 L = len(np.unique(z_arr))
-                print(f'discretize Z into L={L} bins')
                 # discretized Z start from 1 instead of 0
                 if min(z_arr) <= 0:
                     z_arr -= min(z_arr) - 1
+            print(f'discretize IV into L={L} bins')
 
             if dropout_prob is not None:
                 probT_arr = dropout_prob.astype('float')
@@ -1477,34 +1479,39 @@ class SimulationBase(object):
                     probT_train, probT_test = None, None
             
             # train model
-            mnar_clf = ExpoTiltingClassifierMNAR()
             if verbose:
-                print(f'observed proportion (train): {np.mean(delta_train)}')
+                print('Fit [MNAR] missing propensity model')
+                print('observed proportion (train): {}'.format(np.mean(delta_train)))
+            if parametric:
+                mnar_clf = ParamMNARClassifier()
+                mnar_clf_kwargs = {}
+            else:
+                mnar_clf = SemiparamMNARClassifier()
+                bounds = None
+                if psi_init is not None:
+                    # bounds = ((psi_init - 1.5, psi_init + 1.5), ) # can set custom search range
+                    bounds = tuple([(psi - 1.5, psi + 1.5) for psi in psi_init])
+                
+                mnar_clf_kwargs = {'psi_init': psi_init, 'bounds': bounds, 'bandwidth_factor': bandwidth_factor}
+            
             fit_start = time.time()
-            bounds = None
-            if psi_init is not None:
-                bounds = ((psi_init - 1.5, psi_init + 1.5), ) # can set custom search range
             mnar_clf.fit(L=L,
                          z=z_train,
                          u=u_train,
                          y=y_train,
                          delta=delta_train,
                          seed=seed,
-                         psi_init=psi_init,
-                         bounds=bounds,
                          verbose=verbose,
-                         bandwidth_factor=bandwidth_factor)
+                         **mnar_clf_kwargs)
             self.mnar_psi = mnar_clf.psi_hat
             if verbose:
-                print(
-                    f'fitting mnar-ipw model takes {time.time()-fit_start} secs.'
-                )
+                print('Done! {} secs elapsed.'.format(time.time()-fit_start))
             self.fitted_dropout_model['model'] = mnar_clf
             # save the model
             if self.dropout_model_filename is not None:
                 mnar_clf.save(self.dropout_model_filename)
 
-            # the following part is only used for simulation
+            # the following part is only used for sanity check in simulation
             if True:
                 prob_pred_test = 1 - \
                     mnar_clf.predict_proba(u=u_test, z=z_test, y=y_test)
@@ -1533,8 +1540,10 @@ class SimulationBase(object):
                     if verbose:
                         print(f'MSE on test set: {test_mse}')
                     self._dropout_prob_mse = test_mse
+        else:
+            raise NotImplementedError
 
-        # add some additional tracking
+        # some additional tracking
         if verbose and probT_train is not None:
             prob_pred_df = pd.DataFrame({
                 'X1': states_train[:, 0],
@@ -1559,10 +1568,8 @@ class SimulationBase(object):
             else:
                 nan_index = np.isnan(probT_train)
                 train_mse = mean_squared_error(y_true=probT_train[~nan_index], y_pred=prob_pred_train[~nan_index])                
-            logitT_train = np.log(1 / np.maximum(probT_train, 1e-8) - 1)
-            logit_pred_train = np.log(1 /
-                                        np.maximum(prob_pred_train, 1e-8) -
-                                        1)
+            logitT_train = np.log(1 / np.clip(probT_train, a_min=1e-8, a_max=1-1e-8) - 1)
+            logit_pred_train = np.log(1 / np.clip(prob_pred_train, a_min=1e-8, a_max=1-1e-8) - 1)
             print(
                 'true obs prob (0.0/0.25/0.5/0.75/1.0 quantile): {0:.2f}/{1:.2f}/{2:.2f}/{3:.2f}/{4:.2f}'
                 .format(np.nanmin(probT_train),

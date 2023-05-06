@@ -958,17 +958,20 @@ class StateActionVisitationRatioSpline():
                 knots = np.tile(knots.reshape(-1, 1), reps=(1, self.state_dim))
             self.knot = knots
         elif isinstance(knots, str) and knots == 'quantile':
+            # base_knots = np.quantile(a=scaled_obs_concat, q=np.linspace(0, 1, L - d + 1), axis=0)  # (L+1, state_dim)
+            # upper = base_knots.max(axis=0)
+            # lower = base_knots.min(axis=0)
             base_knots = np.quantile(a=scaled_obs_concat,
-                                     q=np.linspace(0, 1, L - d + 1),
-                                     axis=0)  # (L+1, state_dim)
-            upper = base_knots.max(axis=0)
-            lower = base_knots.min(axis=0)
+                                    q=np.linspace(0, 1, num=L - d + 2, endpoint=False),
+                                    axis=0)[1:]  # (L-d+1, state_dim), excluded two endpoints
             # left_extrapo = np.linspace(lower - d * (upper - lower) / (L - d),
             #                         lower,
             #                         num=d + 1)[:-1]
             # right_extrapo = np.linspace(upper,
             #                             upper + d * (upper - lower) / (L - d),
             #                             num=d + 1)[1:]
+            upper = scaled_obs_concat.max(axis=0)
+            lower = scaled_obs_concat.min(axis=0)
             left_extrapo = [lower] * d
             right_extrapo = [upper] * d # repeated boundary knots to avoid extrapolation
             self.knot = np.concatenate(
@@ -1282,17 +1285,20 @@ class StateActionVisitationRatioExpoLinear():
                 knots = np.tile(knots.reshape(-1, 1), reps=(1, self.state_dim))
             self.knot = knots
         elif isinstance(knots, str) and knots == 'quantile':
+            # base_knots = np.quantile(a=scaled_obs_concat, q=np.linspace(0, 1, L - d + 1), axis=0)
+            # upper = base_knots.max(axis=0)
+            # lower = base_knots.min(axis=0)
             base_knots = np.quantile(a=scaled_obs_concat,
-                                     q=np.linspace(0, 1, L - d + 1),
-                                     axis=0)  # (L+1, state_dim)
-            upper = base_knots.max(axis=0)
-            lower = base_knots.min(axis=0)
+                                    q=np.linspace(0, 1, num=L - d + 2, endpoint=False),
+                                    axis=0)[1:]  # (L-d+1, state_dim), excluded two endpoints
             # left_extrapo = np.linspace(lower - d * (upper - lower) / (L - d),
             #                         lower,
             #                         num=d + 1)[:-1]
             # right_extrapo = np.linspace(upper,
             #                             upper + d * (upper - lower) / (L - d),
             #                             num=d + 1)[1:]
+            upper = scaled_obs_concat.max(axis=0)
+            lower = scaled_obs_concat.min(axis=0)
             left_extrapo = [lower] * d
             right_extrapo = [upper] * d # repeated boundary knots to avoid extrapolation
             self.knot = np.concatenate(

@@ -359,8 +359,8 @@ class LSTDQ(SimulationBase):
             self.knot = knots
         elif isinstance(knots, str) and knots == 'quantile':
             base_knots = np.quantile(a=scaled_obs_concat,
-                                     q=np.linspace(0, 1, num=L - d + 1, endpoint=False),
-                                     axis=0)  # (L+1, state_dim)
+                                     q=np.linspace(0, 1, num=L - d + 2, endpoint=False),
+                                     axis=0)[1:]  # (L-d+1, state_dim), excluded two endpoints
             upper = scaled_obs_concat.max(axis=0) # base_knots.max(axis=0)
             lower = scaled_obs_concat.min(axis=0) # base_knots.min(axis=0)
             # left_extrapo = np.linspace(lower - d * (upper - lower) / (L - d),
@@ -1540,8 +1540,8 @@ class FQE(SimulationBase):
                 self.knot = knots
             elif isinstance(knots, str) and knots == 'quantile':
                 base_knots = np.quantile(a=scaled_state_concat,
-                                        q=np.linspace(0, 1, num=L - d + 1, endpoint=False),
-                                        axis=0)  # (L+1, state_dim)
+                                        q=np.linspace(0, 1, num=L - d + 2, endpoint=False),
+                                        axis=0)[1:]  # (L-d+1, state_dim), excluded two endpoints
                 upper = scaled_state_concat.max(axis=0) # base_knots.max(axis=0)
                 lower = scaled_state_concat.min(axis=0) # base_knots.min(axis=0)
                 # left_extrapo = np.linspace(lower - d * (upper - lower) / (L - d),
