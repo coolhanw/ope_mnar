@@ -113,6 +113,10 @@ class MinMaxScaler():
 
     def inverse_transform(self, S):
         return S * (self.data_max_ - self.data_min_) + self.data_min_
+    
+    def reset(self):
+        self.data_min_ = -np.inf
+        self.data_max_ = np.inf
 
 
 class SemiparamMNARClassifier():
@@ -391,7 +395,7 @@ class SemiparamMNARClassifier():
                     fun=step1_func,
                     x0=psi_init,
                     bounds=bounds,
-                    method='Nelder-Mead' # 'L-BFGS-B'
+                    method='L-BFGS-B' # 'L-BFGS-B', 'Nelder-Mead'
                 )
                 psi_hat_step1 = optresult1.x
                 psi_hat_list.append(psi_hat_step1)

@@ -10,6 +10,7 @@ from functools import reduce, partial
 from itertools import product
 from scipy.stats import norm
 from scipy.interpolate import BSpline
+from operator import itemgetter
 # ML model
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.preprocessing import StandardScaler
@@ -23,6 +24,7 @@ from gym.vector.utils.spaces import batch_space
 # visualization
 import seaborn as sns
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
 
 from utils import normcdf, iden, MinMaxScaler, SimpleReplayBuffer, DiscretePolicy
 from base import SimulationBase
@@ -338,7 +340,7 @@ class LSTDQ(SimulationBase):
             print('Compute the min and max to be used for scaling')
             self.scaler.fit(obs_concat)
         scaled_obs_concat = self.scaler.transform(obs_concat)
-        # print(np.quantile(a=scaled_obs_concat, q=[0.25,0.5,0.75], axis=0))
+        # print('quantiles of scaled_obs_concat', np.quantile(a=scaled_obs_concat, q=[0, 0.25,0.5,0.75, 1], axis=0))
 
         if isinstance(knots, str) and knots == 'equivdist':
             upper = scaled_obs_concat.max(axis=0)
@@ -347,7 +349,7 @@ class LSTDQ(SimulationBase):
             #                     stop=upper + d * (upper - lower) / (L - d),
             #                     num=L + d + 1)
             # self.knot = knots
-            base_knots = np.linspace(start=lower, stop=upper, num=L - d + 1)
+            base_knots = np.linspace(start=lower, stop=upper, num=L - d + 2, endpoint=False)[1:]
             left_extrapo = [lower] * d
             right_extrapo = [upper] * d # repeated boundary knots to avoid extrapolation
             self.knot = np.concatenate(
@@ -396,6 +398,12 @@ class LSTDQ(SimulationBase):
             print(
                 "Building %d-th basis spline (total %d state dimemsion) which has %d basis "
                 % (i, self.state_dim, len(self.bspline[i])))
+
+        self.para = {}
+        for i in range(self.num_actions):
+            self.para[i] = np.random.normal(loc=0,
+                                            scale=0.1,
+                                            size=self.para_dim)
             
         # ## visualize the basis functions
         # for i in range(self.state_dim):
@@ -407,12 +415,6 @@ class LSTDQ(SimulationBase):
         #     ax.plot(self.knot.T[i], [0] * len(self.knot), marker='.', linestyle='dashed')
         #     ax.legend()
         #     plt.show()
-
-        self.para = {}
-        for i in range(self.num_actions):
-            self.para[i] = np.random.normal(loc=0,
-                                            scale=0.1,
-                                            size=self.para_dim)
 
     ##################################
     ## calculate Q and value function
@@ -683,6 +685,7 @@ class LSTDQ(SimulationBase):
         next_obs = np.vstack(next_obs_list)  # (total_T, S_dim)
         actions = np.vstack(action_list)  # (total_T, 1)
         rewards = np.vstack(reward_list)  # (total_T, 1)
+        print('rewards quantiles', np.quantile(a=rewards, q=(0,0.25,0.5,0.75,1)))
         inverse_wts = np.vstack(inverse_wt_list).astype(float)  # (total_T, 1)
         del training_buffer
         print(f'pseudo sample size: {int(inverse_wts.sum())}')
@@ -1246,7 +1249,7 @@ class LSTDQ(SimulationBase):
 
     def get_value_interval(self,
                            target_policy=None,
-                           alpha=0.05,
+                           alpha_list=[0.05],
                            S_inits=None,
                            MC_size=None):
         """Main function for getting value confidence interval."""
@@ -1271,20 +1274,23 @@ class LSTDQ(SimulationBase):
         ])
         V_int_sigma_sq = V_int_sigma_sq.item()
         std = (V_int_sigma_sq**0.5) / (self.total_T_ipw**0.5)
+        inference_summary = {'value': V, 'std': std}
 
-        lower_bound = V - norm.ppf(1 - alpha / 2) * std
-        upper_bound = V + norm.ppf(1 - alpha / 2) * std
+        lower_bound = {}
+        upper_bound = {}
+        for alpha in alpha_list:
+            lower_bound[alpha] = V - norm.ppf(1 - alpha / 2) * std
+            upper_bound[alpha] = V + norm.ppf(1 - alpha / 2) * std
 
-        inference_summary = {
+        inference_summary.update({
             'lower_bound': lower_bound,
             'upper_bound': upper_bound,
-            'value': V,
-            'std': std
-        }
+        })
         return inference_summary
 
-    def validate_Q(self, grid_size=10, visualize=False, quantile=False, seed=None):
-        self.grid = []
+    def validate_Q(self, grid_size=10, visualize=False, quantile=False, slice_dim=(0,1), 
+                   prefix='', seed=None, mark_eval_states=False, eval_states=None):
+        # self.grid = []
         self.idx2states = collections.defaultdict(list)
 
         obs_list, action_list = [], []
@@ -1299,6 +1305,13 @@ class LSTDQ(SimulationBase):
         states = np.vstack(obs_list)  # (total_T, S_dim)
         actions = np.vstack(action_list)  # (total_T, 1)
 
+        if eval_states is not None:
+            states = eval_states  # self._initial_obs
+            # actions = self.behavior_policy(eval_states)
+            # if actions.ndim == 2:
+            #     actions = actions.argmax(axis=1)
+            actions = np.random.choice(self.num_actions, size=len(eval_states))
+
         repeats_per_state = 5 # 1
         states = np.repeat(a=states, repeats=repeats_per_state, axis=0)
         actions = np.repeat(a=actions, repeats=repeats_per_state, axis=0)
@@ -1308,6 +1321,7 @@ class LSTDQ(SimulationBase):
         # generate trajectories under the target policy
         init_states = states  # self._initial_obs
         init_actions = actions  # self._init_actions
+        
         eval_size = len(init_states)
         if self.eval_env.is_vector_env:
             old_num_envs = self.eval_env.num_envs
@@ -1341,23 +1355,35 @@ class LSTDQ(SimulationBase):
             raise NotImplementedError
 
         discretized_states = np.zeros_like(states)
+        if mark_eval_states:
+            discretized_eval_states = np.zeros_like(eval_states)
         for i in range(self.state_dim):
             if quantile:
                 disc_bins = np.quantile(a=states[:,i], q=np.linspace(0, 1, grid_size + 1))
                 disc_bins[0] -= 0.1
                 disc_bins[-1] += 0.1
             else:
-                disc_bins = np.linspace(start=self.low[i] - 0.1,
-                                        stop=self.high[i] + 0.1,
-                                        num=grid_size + 1)                
-            self.grid.append(disc_bins)
-            discretized_states[:, i] = np.digitize(states[:, i],
-                                                   bins=disc_bins) - 1
+                low = np.min(states, axis=0)
+                high = np.max(states, axis=0)
+                disc_bins = np.linspace(start=low[i] - 0.1, # self.low[i] - 0.1
+                                        stop=high[i] + 0.1, # self.high[i] + 0.1
+                                        num=grid_size + 1)
+            # self.grid.append(disc_bins)
+            discretized_states[:, i] = np.digitize(states[:, i], bins=disc_bins) - 1
+            if mark_eval_states:
+                discretized_eval_states[:, i] = np.digitize(eval_states[:, i], bins=disc_bins) - 1
         discretized_states = list(map(tuple, discretized_states.astype('int')))
+        if mark_eval_states:
+            discretized_eval_states = list(map(tuple, discretized_eval_states.astype('int')))
+            unique_eval_idx = set()
+            for des in discretized_eval_states:
+                # unique_eval_idx.add(des[:2]) # # only use the first 2 dimensions
+                unique_eval_idx.add(itemgetter(*slice_dim)(des)) # # only use the first 2 dimensions
         for ds, s, a, q, qr in zip(discretized_states, states,
                                    actions.squeeze(), Q_est, Q_ref):
             # only use the first 2 dimensions of discretized_states as key
-            self.idx2states[ds[:2]].append(np.concatenate([s, [a], [q], [qr]]))
+            # self.idx2states[ds[:2]].append(np.concatenate([s, [a], [q], [qr]]))
+            self.idx2states[itemgetter(*slice_dim)(ds)].append(np.concatenate([s, [a], [q], [qr]]))
 
         # only for binary action
         Q_mat = np.zeros(shape=(self.num_actions, grid_size, grid_size))
@@ -1381,26 +1407,23 @@ class LSTDQ(SimulationBase):
                                    self.num_actions,
                                    figsize=(5 * self.num_actions, 8))
             for a in range(self.num_actions):
-                # sns.heatmap(Q_mat[a], cmap="YlGnBu", linewidth=1, ax=ax[0, a])
-                # ax[0, a].invert_yaxis()
-                # ax[0, a].set_title(f'estimated Q (action={a})')
                 sns.heatmap(Q_mat[a], cmap="YlGnBu", linewidth=1, ax=ax[a,1])
                 ax[a,1].invert_yaxis()
-                ax[a,1].set_title(f'estimated Q (action={a})')
+                ax[a,1].set_title('estimated Q (action={})'.format(a))
+                if mark_eval_states:
+                    for idx in unique_eval_idx:
+                        ax[a,1].add_patch(Rectangle(xy=idx, width=1, height=1, fill=False, edgecolor='#fec44f', lw=2))
             for a in range(self.num_actions):
-                # sns.heatmap(Q_ref_mat[a],
-                #             cmap="YlGnBu",
-                #             linewidth=1,
-                #             ax=ax[1, a])
-                # ax[1, a].invert_yaxis()
-                # ax[1, a].set_title(f'empirical Q (action={a})')
                 sns.heatmap(Q_ref_mat[a],
                             cmap="YlGnBu",
                             linewidth=1,
                             ax=ax[a,0])
                 ax[a,0].invert_yaxis()
-                ax[a,0].set_title(f'empirical Q (action={a})')
-            plt.savefig('./output/Qfunc_heatplot.png')
+                ax[a,0].set_title('empirical Q (action={})'.format(a))
+                if mark_eval_states:
+                    for idx in unique_eval_idx:
+                        ax[a,0].add_patch(Rectangle(xy=idx, width=1, height=1, fill=False, edgecolor='#fec44f', lw=2))
+            plt.savefig('./output/{}Qfunc_heatplot.png'.format(prefix))
 
 
 class FQE(SimulationBase):
@@ -1528,7 +1551,7 @@ class FQE(SimulationBase):
                 #                     stop=upper + d * (upper - lower) / (L - d),
                 #                     num=L + d + 1)
                 # self.knot = knots
-                base_knots = np.linspace(start=lower, stop=upper, num=L - d + 1)
+                base_knots = np.linspace(start=lower, stop=upper, num=L - d + 2, endpoint=False)[1:]
                 left_extrapo = [lower] * d
                 right_extrapo = [upper] * d # repeated boundary knots to avoid extrapolation
                 self.knot = np.concatenate(

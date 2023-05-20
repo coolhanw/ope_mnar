@@ -110,7 +110,7 @@ class DRL(SimulationBase):
             # print('v3', integrated_Q)
         return Q_debias + integrated_Q
 
-    def get_value_interval(self, alpha=0.05):
+    def get_value_interval(self, alpha_list=[0.05]):
         states = self.replay_buffer.states
         actions = self.replay_buffer.actions
         rewards = self.replay_buffer.rewards
@@ -136,13 +136,16 @@ class DRL(SimulationBase):
         V = np.sum(Q_debias) / total_T + integrated_Q
         V_int_sigma_sq = np.sum(Q_debias ** 2) / total_T
         std = (V_int_sigma_sq ** 0.5) / (total_T ** 0.5)
-        lower_bound = V - norm.ppf(1 - alpha / 2) * std
-        upper_bound = V + norm.ppf(1 - alpha / 2) * std
+        inference_summary = {'value': V, 'std': std}
 
-        inference_summary = {
+        lower_bound = {}
+        upper_bound = {}
+        for alpha in alpha_list:
+            lower_bound[alpha] = V - norm.ppf(1 - alpha / 2) * std
+            upper_bound[alpha] = V + norm.ppf(1 - alpha / 2) * std
+
+        inference_summary.update({
             'lower_bound': lower_bound,
             'upper_bound': upper_bound,
-            'value': V,
-            'std': std
-        }
+        })
         return inference_summary

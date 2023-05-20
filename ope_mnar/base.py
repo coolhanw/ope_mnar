@@ -7,6 +7,7 @@ import joblib
 import time
 import collections
 import pathlib
+from operator import itemgetter
 # RL environment
 from gym.spaces import Tuple
 from gym.vector.utils.spaces import batch_space
@@ -56,7 +57,7 @@ class SimulationBase(object):
         self.n = n
         self.max_T = self.env.T if horizon is None else horizon # maximum horizon
         self.gamma = discount
-        self.obs_policy = lambda S: self.env.action_space.sample() if self.env is not None else None  # uniform sample
+        # self.behavior_policy = lambda S: self.env.action_space.sample() if self.env is not None else None  # uniform sample
 
         if self.env is not None:
             if self.vectorized_env:
@@ -140,7 +141,7 @@ class SimulationBase(object):
             dropout_prob_traj (np.ndarray)
         """
         if policy is None:
-            policy = self.obs_policy if self.obs_policy is not None else lambda S: self.env.action_space.sample(
+            policy = self.behavior_policy if self.behavior_policy is not None else lambda S: self.env.action_space.sample(
             )
         if evaluation:
             env = self.eval_env
@@ -257,7 +258,7 @@ class SimulationBase(object):
         if A_inits is not None and len(A_inits.shape) == 1:
             A_inits = A_inits.reshape(-1, 1)
         if policy is None:
-            policy = self.obs_policy if self.obs_policy is not None else lambda S: self.env.action_space.sample()
+            policy = self.behavior_policy if self.behavior_policy is not None else lambda S: self.env.action_space.sample()
         if evaluation:
             env = self.eval_env
             max_T = env.T
@@ -358,6 +359,7 @@ class SimulationBase(object):
             seed (int): random seed for env
         """
         self.burn_in = burn_in
+        self.behavior_policy = policy
         if n is None:
             n = self.n
         if S_inits is not None:
@@ -1490,7 +1492,7 @@ class SimulationBase(object):
                 bounds = None
                 if psi_init is not None:
                     # bounds = ((psi_init - 1.5, psi_init + 1.5), ) # can set custom search range
-                    bounds = tuple([(psi - 1.5, psi + 1.5) for psi in psi_init])
+                    bounds = tuple([(psi - 5, psi + 5) for psi in psi_init])
                 
                 mnar_clf_kwargs = {'psi_init': psi_init, 'bounds': bounds, 'bandwidth_factor': bandwidth_factor}
             
@@ -2217,7 +2219,7 @@ class SimulationBase(object):
         """
         raise NotImplementedError
 
-    def validate_visitation_ratio(self, grid_size=10, visualize=False, quantile=False, apply_weights=False):
+    def validate_visitation_ratio(self, grid_size=10, visualize=False, quantile=False, apply_weights=False, prefix=''):
         self.grid = []
         self.idx2states = collections.defaultdict(list)
         if not hasattr(self, 'replay_buffer'):
@@ -2319,14 +2321,6 @@ class SimulationBase(object):
 
             fig, ax = plt.subplots(2, self.num_actions, figsize=(5*self.num_actions,8))
             for a in range(self.num_actions):
-                # sns.heatmap(
-                #     freq_mat[a], 
-                #     cmap="YlGnBu",
-                #     linewidth=1,
-                #     ax=ax[0,a]
-                # )
-                # ax[0,a].invert_yaxis()
-                # ax[0,a].set_title(f'discretized state visitation of pi_b (action={a})')
                 sns.heatmap(
                     freq_mat[a], 
                     cmap="YlGnBu",
@@ -2334,16 +2328,8 @@ class SimulationBase(object):
                     ax=ax[a,1]
                 )
                 ax[a,1].invert_yaxis()
-                ax[a,1].set_title(f'discretized state visitation of pi_b (action={a})')
+                ax[a,1].set_title('discretized state visitation of pi_b (action={})'.format(a))
             for a in range(self.num_actions):
-                # sns.heatmap(
-                #     freq_target_mat[a], 
-                #     cmap="YlGnBu",
-                #     linewidth=1,
-                #     ax=ax[1,a]
-                # )
-                # ax[1,a].invert_yaxis()
-                # ax[1,a].set_title(f'discretized state visitation of pi (action={a})')
                 sns.heatmap(
                     freq_target_mat[a], 
                     cmap="YlGnBu",
@@ -2351,19 +2337,11 @@ class SimulationBase(object):
                     ax=ax[a,0]
                 )
                 ax[a,0].invert_yaxis()
-                ax[a,0].set_title(f'discretized state visitation of pi (action={a})')
-            plt.savefig('./output/visitation_heatplot.png')
+                ax[a,0].set_title('discretized state visitation of pi (action={})'.format(a))
+            plt.savefig('./output/{}visitation_heatplot.png'.format(prefix))
 
             fig, ax = plt.subplots(2, self.num_actions, figsize=(5*self.num_actions,8))
             for a in range(self.num_actions):
-                # sns.heatmap(
-                #     visit_ratio_mat[a], 
-                #     cmap="YlGnBu",
-                #     linewidth=1,
-                #     ax=ax[0,a]
-                # )
-                # ax[0,a].invert_yaxis()
-                # ax[0,a].set_title(f'est visitation ratio (action={a})')
                 sns.heatmap(
                     visit_ratio_mat[a], 
                     cmap="YlGnBu",
@@ -2371,16 +2349,8 @@ class SimulationBase(object):
                     ax=ax[a,1]
                 )
                 ax[a,1].invert_yaxis()
-                ax[a,1].set_title(f'est visitation ratio (action={a})')
+                ax[a,1].set_title('est visitation ratio (action={})'.format(a))
             for a in range(self.num_actions):
-                # sns.heatmap(
-                #     visit_ratio_ref_mat[a], 
-                #     cmap="YlGnBu",
-                #     linewidth=1,
-                #     ax=ax[1,a]
-                # )
-                # ax[1,a].invert_yaxis()
-                # ax[1,a].set_title(f'empirical visitation ratio (action={a})')
                 sns.heatmap(
                     visit_ratio_ref_mat[a], 
                     cmap="YlGnBu",
@@ -2388,12 +2358,12 @@ class SimulationBase(object):
                     ax=ax[a,0]
                 )
                 ax[a,0].invert_yaxis()
-                ax[a,0].set_title(f'empirical visitation ratio (action={a})')
+                ax[a,0].set_title('empirical visitation ratio (action={})'.format(a))
             fig.suptitle('Value estimate: {:.3f}'.format(value_est))
-            plt.savefig(f'./output/est_visitation_ratio_heatplot.png')
+            plt.savefig('./output/{}est_visitation_ratio_heatplot.png'.format(prefix))
             plt.close()
 
-    def validate_Q(self, grid_size=10, visualize=False, quantile=False):
+    def validate_Q(self, grid_size=10, visualize=False, quantile=False, slice_dim=(0,1), prefix=''):
         self.grid = []
         self.idx2states = collections.defaultdict(list)
         states = self.replay_buffer.states
@@ -2453,7 +2423,8 @@ class SimulationBase(object):
         discretized_states = list(map(tuple, discretized_states.astype('int')))
         for ds, s, a, q, qr in zip(discretized_states, states, actions, Q_est, Q_ref):
             # only use the first 2 dimensions of discretized_states as key
-            self.idx2states[ds[:2]].append(np.concatenate([s, [a], [q], [qr]]))
+            # self.idx2states[ds[:2]].append(np.concatenate([s, [a], [q], [qr]]))
+            self.idx2states[itemgetter(*slice_dim)(ds)].append(np.concatenate([s, [a], [q], [qr]]))
 
         # only for binary action
         Q_mat = np.zeros(shape=(self.num_actions, grid_size, grid_size))
@@ -2471,14 +2442,6 @@ class SimulationBase(object):
 
             fig, ax = plt.subplots(2, self.num_actions, figsize=(5*self.num_actions,8))
             for a in range(self.num_actions):
-                # sns.heatmap(
-                #     Q_mat[a], 
-                #     cmap="YlGnBu",
-                #     linewidth=1,
-                #     ax=ax[0,a]
-                # )
-                # ax[0,a].invert_yaxis()
-                # ax[0,a].set_title(f'estimated Q (action={a})')
                 sns.heatmap(
                     Q_mat[a], 
                     cmap="YlGnBu",
@@ -2486,16 +2449,8 @@ class SimulationBase(object):
                     ax=ax[a,1]
                 )
                 ax[a,1].invert_yaxis()
-                ax[a,1].set_title(f'estimated Q (action={a})')
+                ax[a,1].set_title('estimated Q (action={})'.format(a))
             for a in range(self.num_actions):
-                # sns.heatmap(
-                #     Q_ref_mat[a], 
-                #     cmap="YlGnBu",
-                #     linewidth=1,
-                #     ax=ax[1,a]
-                # )
-                # ax[1,a].invert_yaxis()
-                # ax[1,a].set_title(f'empirical Q (action={a})')
                 sns.heatmap(
                     Q_ref_mat[a], 
                     cmap="YlGnBu",
@@ -2503,5 +2458,5 @@ class SimulationBase(object):
                     ax=ax[a,0]
                 )
                 ax[a,0].invert_yaxis()
-                ax[a,0].set_title(f'empirical Q (action={a})')
-            plt.savefig(f'./output/Qfunc_heatplot.png')
+                ax[a,0].set_title('empirical Q (action={})'.format(a))
+            plt.savefig('./output/{}Qfunc_heatplot.png'.format(prefix))
